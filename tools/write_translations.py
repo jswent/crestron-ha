@@ -29,7 +29,7 @@ labels.update(
         "entities": "Entity features",
     }
 )
-entity_description = 'Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Analog and serial joins: 1–1024; digital joins: 1–4096. Feedback determines state.'
+entity_description = "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Analog and serial joins: 1–1024; digital joins: 1–4096. Feedback determines state."
 bridge_description = "A bridge is one independent XSIG listener. Crestron connects to Home Assistant on this port. Use a different port for every bridge; 0.0.0.0 listens on all local IPv4 interfaces. Listen address belongs to this Home Assistant machine, not the Crestron processor. A processor does not need to be connected to save configuration."
 errors = {
     "invalid_mapping": "Check join ranges and required fields. Media players need either an analog source join and source map, or a digital source map. Source names must be unique and the default must exist. Export joins must be unique and templates valid."
@@ -62,7 +62,7 @@ for kind in ("entity", "device", "export", "action"):
     }[kind]
     description = {
         "entity": entity_description,
-        "device": 'Group features of one physical product under one device. Entity features is a list of objects, each with a stable id, platform, name and platform join settings, for example `id: level`, `platform: light`, `name: Light` and `brightness_join: 1`. See the repository README for a full example. Keep each id and platform unchanged when editing. Removing a feature here deletes its entity; bulk imports preserve omitted features.',
+        "device": "Group features of one physical product under one device. Entity features is a list of objects, each with a stable id, platform, name and platform join settings, for example `id: level`, `platform: light`, `name: Light` and `brightness_join: 1`. See the repository README for a full example. Keep each id and platform unchanged when editing. Removing a feature here deletes its entity; bulk imports preserve omitted features.",
         "export": "Send a Home Assistant template result to a Crestron join when it changes or the processor reconnects. Unknown or unavailable results are skipped. Digital templates accept true/false or on/off; analog values are 0–65535.",
         "action": "Run actions when this Crestron join arrives. Templates in actions can use value, join, join_type and entry_id. Digital release is ignored by default.",
     }[kind]
