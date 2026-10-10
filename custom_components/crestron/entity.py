@@ -83,7 +83,7 @@ class CrestronEntity(Entity):
 
     @callback
     def _handle_feedback(self, kind: str, join: int | None, value: Any) -> None:
-        if kind == "available" or (kind, join) in self._watched:
+        if kind in ("available", "refreshed") or (kind, join) in self._watched:
             self.async_write_ha_state()
 
     @property

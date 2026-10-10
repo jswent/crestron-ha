@@ -26,7 +26,7 @@ set_join:
         object:
 get_join:
   name: Get join
-  description: Read cached feedback and connection status for one bridge. A missing value is null.
+  description: Read feedback and connection status for one bridge. A digital or analog join the connected processor has not reported reads as false or 0. A missing serial value is null.
   fields:
     entry_id:
       required: true
@@ -71,7 +71,7 @@ pulse_join:
           mode: box
 request_update:
   name: Request join update
-  description: Ask the connected processor to resend its feedback.
+  description: Ask the connected processor to resend its non-zero feedback.
   fields:
     entry_id:
       required: true

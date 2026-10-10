@@ -16,9 +16,11 @@ feedback mappings, and scheduled events relative to each connection. Example::
     }
 
 Commands are echoed on the same join unless a feedback mapping redirects them.
-Use --all-joins to seed every legal join, --no-echo for feedback-only testing, and
---interactive for commands: digital JOIN 0|1, analog JOIN VALUE, serial JOIN TEXT,
-sync, reconnect, quit. Serial values are never printed to the console.
+Like the XSIG symbol, the reply to an update request carries non-zero signals only.
+Use --all-joins to seed every legal join with a non-zero value, --no-echo for
+feedback-only testing, and --interactive for commands: digital JOIN 0|1,
+analog JOIN VALUE, serial JOIN TEXT, sync, reconnect, quit. Serial values are never
+printed to the console.
 """
 
 from __future__ import annotations
@@ -111,9 +113,9 @@ class Simulator:
         self.values = {kind: dict(self.scenario[kind]) for kind in ENCODERS}
         if all_joins:
             for kind, maximum, default in (
-                ("digital", 4096, False),
-                ("analog", 1024, 0),
-                ("serial", 1024, ""),
+                ("digital", 4096, True),
+                ("analog", 1024, 1),
+                ("serial", 1024, "Simulated"),
             ):
                 self.values[kind] = {
                     join: self.values[kind].get(join, default)
@@ -162,11 +164,16 @@ class Simulator:
             self.writer = None
 
     async def seed_feedback(self) -> None:
-        """Send the current simulated state after a 0xFD update request."""
+        """Answer a 0xFD update request as the XSIG symbol does.
+
+        Only signals that are not zero are re-transmitted; a low digital, zero
+        analog or empty serial join is never part of a refresh.
+        """
         for kind in ENCODERS:
             for join, value in self.values[kind].items():
-                await self._write(ENCODERS[kind](join, value))
-        print("Seeded all configured feedback joins", flush=True)
+                if value:
+                    await self._write(ENCODERS[kind](join, value))
+        print("Seeded the non-zero feedback joins", flush=True)
 
     async def send_feedback(self, kind: str, join: int, value: Any) -> None:
         """Update and send a simulated feedback signal."""

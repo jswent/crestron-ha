@@ -306,9 +306,9 @@ These actions are available under **Developer tools → Actions** and in automat
 | Action | Description |
 | --- | --- |
 | `crestron.set_join` | Send a digital, analog, or serial value to a join. |
-| `crestron.get_join` | Return the last value received for a join. |
+| `crestron.get_join` | Return the current feedback value of a join. |
 | `crestron.pulse_join` | Set a digital join high, then low again. |
-| `crestron.request_update` | Ask the processor to resend all of its current values. |
+| `crestron.request_update` | Ask the processor to resend its current non-zero values. |
 
 ```yaml
 action: crestron.set_join
@@ -341,9 +341,9 @@ Include `entry_id` so that the same join number on another bridge does not trigg
 ## How state works
 
 - **Unavailable** means no processor is connected to the bridge.
-- **Unknown** means the processor is connected but has not yet reported that join. Home Assistant asks for all current values each time the processor connects.
+- **Unknown** is brief. Each time the processor connects, Home Assistant asks for its current values, and the processor answers with only the signals that are not zero. About a second later, every digital or analog join it did not send reads as off or 0. A text (serial) join stays unknown until the processor sends it.
 - **State follows feedback.** After a command, an entity changes only when the processor reports the new value. If nothing in your Crestron program feeds the join back, the entity will not update.
-- **Pulsed switches and mute need feedback.** Home Assistant will not toggle them while their state is unknown, because it could not tell which way the toggle would go.
+- **Pulsed switches and mute follow feedback.** Home Assistant pulses them only when the feedback differs from the requested state. A join with no feedback reads as off, so turning it on always pulses and turning it off does nothing. During the first second after the processor connects, the state is unknown and Home Assistant will not toggle them.
 
 ## Troubleshooting
 
@@ -351,7 +351,8 @@ Include `entry_id` so that the same join number on another bridge does not trigg
 | --- | --- |
 | The bridge fails to start | The listen port is used by another program, or the listen address is not an address of the Home Assistant machine. Use `0.0.0.0` and a free port. |
 | Entities stay unavailable | The processor is not connected. Check the TCP/IP Client's IP address, port, and Connect signal, and any firewall in between. If Home Assistant runs in a container without host networking, publish the bridge port. |
-| Entities stay unknown | The processor is connected but is not sending that join. Check the join number and type, then run `crestron.request_update`. |
+| An entity stays off or at 0 | The processor is connected but is not sending that join. Check the join number and type, and that your Crestron program feeds the signal back. |
+| A text sensor stays unknown | The processor resends a serial signal only when it changes, unless the program makes the string permanent. |
 | Digital joins are off by a fixed amount | The XSIG symbol mixes digital signals with analog or serial ones. See [Set up the Crestron program](#set-up-the-crestron-program). |
 | A second processor cannot connect | A bridge accepts one connection at a time. Add another bridge on a different port. |
 

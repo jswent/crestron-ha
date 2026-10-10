@@ -177,6 +177,49 @@ async def test_feedback_clears_on_disconnect_and_reconnect(server):
     await close_peer(writer)
 
 
+async def test_unreported_joins_read_zero_once_refresh_settles(server, monkeypatch):
+    """A processor answers 0xFD with its non-zero signals only; the rest are zero."""
+    monkeypatch.setattr(xsig, "REFRESH_SETTLE", 0.05)
+    events = []
+    watched = []
+    server.subscribe(lambda *event: events.append(event))
+    server.subscribe(lambda *event: watched.append(event), joins={("digital", 1)})
+    _, writer = await connect(server)
+    writer.write(encode_digital(2, True) + encode_analog(2, 5))
+    await writer.drain()
+    await wait_until(lambda: server.get_analog(2) == 5)
+    assert server.get_digital(1) is None
+    assert server.get_analog(1) is None
+    await wait_until(lambda: ("refreshed", None, None) in events)
+    assert server.get_digital(1) is False
+    assert server.get_analog(1) == 0
+    assert server.get_serial(1) is None
+    assert server.get_digital(2) is True
+    assert server.get_analog(2) == 5
+    assert ("refreshed", None, None) in watched
+    await close_peer(writer)
+
+
+async def test_refresh_defaults_reset_for_every_session(server, monkeypatch):
+    """Zero defaults belong to one settled session, never to a later peer."""
+    monkeypatch.setattr(xsig, "REFRESH_SETTLE", 0.05)
+    events = []
+    server.subscribe(lambda *event: events.append(event))
+    _, writer = await connect(server)
+    await close_peer(writer)
+    await wait_until(lambda: not server.available)
+    await asyncio.sleep(0.1)
+    assert ("refreshed", None, None) not in events
+    assert server.get_digital(1) is None
+    _, writer = await connect(server)
+    assert server.get_digital(1) is None
+    await wait_until(lambda: server.get_digital(1) is False)
+    await close_peer(writer)
+    await wait_until(lambda: not server.available)
+    assert server.get_digital(1) is None
+    assert server.get_analog(1) is None
+
+
 async def test_reject_second_peer_without_displacing_first(server):
     first_reader, first_writer = await connect(server)
     second_reader, second_writer = await asyncio.open_connection(

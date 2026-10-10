@@ -8,6 +8,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.crestron import xsig
 from custom_components.crestron.xsig import (
     encode_analog,
     encode_digital,
@@ -364,3 +365,24 @@ async def test_disconnect_race_becomes_home_assistant_action_error(
         )
     writer.close()
     await writer.wait_closed()
+
+
+async def test_refresh_omitting_zero_joins_reads_off_not_unknown(
+    hass, network_platforms, monkeypatch
+):
+    """A processor refresh omits low and zero joins; they are off, not unknown."""
+    monkeypatch.setattr(xsig, "REFRESH_SETTLE", 0.05)
+    entry, ids, connect = network_platforms
+    reader, writer = await connect()
+    writer.write(encode_digital(1, True))
+    await writer.drain()
+    await eventually(lambda: hass.states.get(ids["relay"]).state == "off")
+    assert hass.states.get(ids["contact"]).state == "on"
+    assert hass.states.get(ids["toggle"]).state == "off"
+    assert hass.states.get(ids["lamp"]).state == "off"
+    assert hass.states.get(ids["text"]).state == "unknown"
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": ids["toggle"]}, blocking=True
+    )
+    assert await asyncio.wait_for(read_message(reader), 2) == ("digital", 3, True)
+    assert await asyncio.wait_for(read_message(reader), 2) == ("digital", 3, False)

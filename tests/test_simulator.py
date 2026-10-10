@@ -28,7 +28,7 @@ async def test_simulator_seeds_and_maps_command_feedback():
     peer = asyncio.create_task(simulator.run_session("127.0.0.1", server.bound_port))
     try:
         await wait_until(lambda: server.get_serial(1) == "Initial")
-        assert server.get_digital(1) is False
+        assert server.get_digital(1) is None
         assert server.get_analog(1) == 32768
         await server.set_digital(2, True)
         await wait_until(lambda: server.get_digital(1) is True)
@@ -36,6 +36,32 @@ async def test_simulator_seeds_and_maps_command_feedback():
         assert simulator.commands == [("digital", 2, True)]
         await server.set_serial(2, "Changed")
         await wait_until(lambda: server.get_serial(2) == "Changed")
+    finally:
+        await server.stop()
+        await asyncio.wait_for(peer, 2)
+
+
+async def test_update_request_resends_only_nonzero_signals():
+    """Like the XSIG symbol, a refresh never transmits low, zero or empty joins."""
+    server = XSigServer()
+    events = []
+    server.subscribe(lambda *event: events.append(event))
+    simulator = Simulator(
+        {
+            "digital": {"1": False, "2": True},
+            "analog": {"1": 0, "2": 7},
+            "serial": {"1": "", "2": "Scene"},
+        }
+    )
+    await server.start("127.0.0.1", 0)
+    peer = asyncio.create_task(simulator.run_session("127.0.0.1", server.bound_port))
+    try:
+        await wait_until(lambda: server.get_serial(2) == "Scene")
+        assert [event for event in events if event[0] != "available"] == [
+            ("digital", 2, True),
+            ("analog", 2, 7),
+            ("serial", 2, "Scene"),
+        ]
     finally:
         await server.stop()
         await asyncio.wait_for(peer, 2)
@@ -72,14 +98,14 @@ async def test_scheduled_feedback_sync_and_reconnect():
 
 async def test_no_echo_leaves_feedback_unchanged():
     server = XSigServer()
-    simulator = Simulator({"digital": {"1": False}}, echo=False)
+    simulator = Simulator({"digital": {"1": True}}, echo=False)
     await server.start("127.0.0.1", 0)
     peer = asyncio.create_task(simulator.run_session("127.0.0.1", server.bound_port))
     try:
-        await wait_until(lambda: server.get_digital(1) is False)
-        await server.set_digital(1, True)
+        await wait_until(lambda: server.get_digital(1) is True)
+        await server.set_digital(1, False)
         await wait_until(lambda: bool(simulator.commands))
-        assert server.get_digital(1) is False
+        assert server.get_digital(1) is True
     finally:
         await server.stop()
         await asyncio.wait_for(peer, 2)
@@ -90,6 +116,7 @@ def test_seed_all_joins_and_validate_before_connecting():
     assert len(simulator.values["digital"]) == 4096
     assert len(simulator.values["analog"]) == 1024
     assert len(simulator.values["serial"]) == 1024
+    assert all(all(values.values()) for values in simulator.values.values())
     with pytest.raises(ValueError):
         validate_scenario({"serial": {"1": "é" * 127}})
     with pytest.raises(ValueError):

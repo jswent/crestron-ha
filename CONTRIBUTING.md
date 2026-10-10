@@ -47,7 +47,7 @@ Then start the simulator:
 uv run python tools/xsig_simulator.py --host 127.0.0.1 --port 16384 --scenario dev/scenario.json --interactive
 ```
 
-The simulator connects to the bridge, seeds the values in the scenario file, and echoes commands back as feedback. Its interactive console accepts:
+The simulator connects to the bridge, seeds the non-zero values in the scenario file, and echoes commands back as feedback. Like a real processor, it leaves low, zero, and empty joins out of that refresh. Its interactive console accepts:
 
 ```text
 analog 1 65535
@@ -61,7 +61,7 @@ quit
 Useful options:
 
 - `--no-echo` checks behavior when the processor sends no feedback.
-- `--all-joins` seeds every legal join.
+- `--all-joins` seeds every legal join with a non-zero value.
 - Scenario files can redirect feedback to another join and schedule timed changes and disconnects. The format is documented at the top of `tools/xsig_simulator.py`.
 
 Run several simulators on different ports to exercise several bridges. The echo is generic: pulsed commands release to false, so latched behavior such as a thermostat mode needs feedback injected from the console or a scenario.
@@ -84,7 +84,7 @@ Run several simulators on different ports to exercise several bridges. The echo 
 
 - **Test against the real thing.** Use Home Assistant fixtures for integration behavior and real loopback TCP peers for wire and lifecycle behavior. Tests must not connect to physical control systems.
 - **One bridge per config entry.** Mappings are subentries of their bridge, and runtime objects live in `entry.runtime_data`.
-- **Feedback is the source of truth.** Keep processor feedback separate from outbound commands. Entities do not update optimistically.
+- **Feedback is the source of truth.** Keep processor feedback separate from outbound commands. Entities do not update optimistically. A processor refresh carries non-zero signals only, so an unreported digital or analog join reads as zero once the refresh has settled.
 - **Keep entity identity stable.** Editing a name, join, or port must not replace an entity.
 - **Clean up everything.** Sockets, subscriptions, script runs, and pending work must be released on every unload, failure, and cancellation path.
 - **Keep payloads out of logs and diagnostics.** No serial contents, template bodies, action sequences, peer addresses, or join values. The `get_join` action and `crestron_join_changed` events are the interfaces for inspecting values.

@@ -1,7 +1,9 @@
 """Small, dependency-free asyncio implementation of the Crestron XSIG wire format.
 
 The processor connects to this server. Received values are feedback, so sending a
-command deliberately does not update the feedback cache. All callbacks run on the
+command deliberately does not update the feedback cache. A processor answers an
+update request with its non-zero signals only, so once that refresh has settled
+every unreported digital or analog join is low or zero. All callbacks run on the
 event loop and must be synchronous and non-blocking.
 """
 
@@ -21,6 +23,8 @@ MAX_SERIAL_JOIN = 1024
 MAX_SERIAL_BYTES = 252
 TRACE_LIMIT = 100
 SEND_TIMEOUT = 5
+# XSIG has no end-of-refresh marker; allow the reply to an update request this long.
+REFRESH_SETTLE = 1.0
 
 type Value = bool | int | str | None
 type Message = tuple[str, int | None, Value]
@@ -128,6 +132,8 @@ class XSigServer:
         self._available = False
         self._stopping = False
         self._session_id = 0
+        self._refreshed = False
+        self._refresh_timer: asyncio.TimerHandle | None = None
         self._digital: dict[int, bool] = {}
         self._analog: dict[int, int] = {}
         self._serial: dict[int, str] = {}
@@ -197,10 +203,12 @@ class XSigServer:
         *,
         joins: set[tuple[str, int]] | None = None,
     ) -> Callable[[], None]:
-        """Subscribe to all messages, or selected joins and availability changes.
+        """Subscribe to all messages, or selected joins and connection changes.
 
-        Indexed subscriptions do not receive sync requests: those request an
-        outbound snapshot and do not alter entity feedback.
+        Connection changes are availability and a settled refresh, which gives
+        every unreported join its zero value. Indexed subscriptions do not receive
+        sync requests: those request an outbound snapshot and do not alter entity
+        feedback.
         """
         if joins is None:
             self._callbacks.add(callback)
@@ -226,17 +234,17 @@ class XSigServer:
         return unsubscribe
 
     def get_digital(self, join: int) -> bool | None:
-        """Read current feedback, or None until this session reports the join."""
+        """Read feedback; an unreported join is low once the refresh has settled."""
         _join(join, MAX_DIGITAL_JOIN)
-        return self._digital.get(join)
+        return self._digital.get(join, False if self._refreshed else None)
 
     def get_analog(self, join: int) -> int | None:
-        """Read analog feedback, or None when no current value is known."""
+        """Read feedback; an unreported join is zero once the refresh has settled."""
         _join(join, MAX_ANALOG_JOIN)
-        return self._analog.get(join)
+        return self._analog.get(join, 0 if self._refreshed else None)
 
     def get_serial(self, join: int) -> str | None:
-        """Read serial feedback, or None when no current value is known."""
+        """Read serial feedback, or None: a refresh may omit a non-empty serial."""
         _join(join, MAX_SERIAL_JOIN)
         return self._serial.get(join)
 
@@ -339,6 +347,9 @@ class XSigServer:
         self._record("lifecycle", "connected")
         try:
             await self.request_update()
+            self._refresh_timer = asyncio.get_running_loop().call_later(
+                REFRESH_SETTLE, self._refresh_settled
+            )
             # Home Assistant can start callback-created tasks eagerly. Complete
             # the handshake before subscribers can send initial template values.
             self._notify("available", None, True)
@@ -407,7 +418,18 @@ class XSigServer:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def _refresh_settled(self) -> None:
+        """Treat joins the refresh omitted as zero until this session ends."""
+        self._refresh_timer = None
+        self._refreshed = True
+        self._record("lifecycle", "refreshed")
+        self._notify("refreshed", None, None)
+
     def _clear_feedback(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.cancel()
+            self._refresh_timer = None
+        self._refreshed = False
         self._digital.clear()
         self._analog.clear()
         self._serial.clear()
@@ -419,7 +441,7 @@ class XSigServer:
 
     def _notify(self, kind: str, join: int | None, value: Value) -> None:
         callbacks = self._callbacks | self._join_callbacks.get((kind, join), set())
-        if kind == "available":
+        if kind in ("available", "refreshed"):
             callbacks |= self._availability_callbacks
         for callback in callbacks:
             try:
