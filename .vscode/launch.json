@@ -1,0 +1,7 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {"name": "Home Assistant dev", "type": "debugpy", "request": "launch", "module": "homeassistant", "args": ["--config", "${workspaceFolder}/dev/config", "--skip-pip"], "justMyCode": false, "console": "integratedTerminal", "python": "${workspaceFolder}/.venv/bin/python"},
+    {"name": "XSIG dummy", "type": "debugpy", "request": "launch", "program": "${workspaceFolder}/tools/xsig_simulator.py", "args": ["--host", "127.0.0.1", "--port", "16384", "--scenario", "${workspaceFolder}/dev/scenario.json", "--interactive"], "console": "integratedTerminal", "python": "${workspaceFolder}/.venv/bin/python"}
+  ]
+}

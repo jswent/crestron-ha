@@ -1,0 +1,39 @@
+[project]
+name = "crestron-ha"
+version = "0.1.0"
+description = "Home Assistant integration for independently configured Crestron XSIG bridges"
+requires-python = ">=3.14.2"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest-homeassistant-custom-component==0.13.367",
+  "ruff==0.14.14",
+  "home-assistant-frontend==20260826.7",
+  "debugpy==1.8.20",
+  "infrared-protocols==9.0.0",
+  "ha-ffmpeg==3.2.2",
+  "rf-protocols==4.3.0",
+  "gazetteer-matcher==1.1.0",
+  "hassil==3.12.1",
+  "home-assistant-intents==2026.8.28",
+  "PyTurboJPEG==1.8.3",
+  "mutagen==1.48.1",
+  "pymicro-vad==1.0.1",
+  "pyspeex-noise==1.0.2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers --disable-socket --allow-hosts=127.0.0.1,localhost,::1"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
