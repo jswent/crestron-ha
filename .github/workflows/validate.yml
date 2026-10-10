@@ -20,5 +20,3 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # Remove once custom_components/crestron/brand/icon.png exists.
-          ignore: brands
