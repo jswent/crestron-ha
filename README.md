@@ -236,7 +236,7 @@ An audio zone with power, volume, mute, and source selection.
 | `sources` | | See below | Source numbers and names, such as `{"1": "Music", "2": "TV"}`. |
 | `source_digital_joins` | | See below | Digital joins and source names, such as `{"51": "Music", "52": "TV"}`. |
 | `default_source` | | No | The source number or join to select when the zone turns on. |
-| `source_bindings` | | No | Source numbers or digital source joins mapped to another `media_player` entity. Supplies playback status and media details for the selected source. |
+| `source_bindings` | | No | Source numbers or digital source joins mapped to another `media_player` entity. Supplies media details and supported playback controls for the selected, available source. |
 
 Choose one way to select sources:
 
@@ -266,16 +266,38 @@ When the powered-on zone selects Sonos 1, it follows that player's playing,
 paused, buffering, or idle status. Playing, paused, and buffering players supply
 their current title, artist, album, artwork, duration, position, and other media
 details. Updates arrive automatically; editing bindings takes effect immediately.
-Crestron still controls power, source, volume, and mute. Bindings do not forward
-play/pause, next-track, seek, or other playback commands.
+Crestron still controls power, source, volume, and mute.
+
+Starting with `0.2.0b2`, the selected binding also enables the source player's
+supported playback controls: play/pause, stop, previous/next track, seek,
+shuffle, repeat, clear playlist, and play-media. Play-media forwards enqueue and
+announcement options only when the source supports them. Grouping, sound modes,
+media browsing, and search remain on the source entity. Several zones selecting
+the same player control that shared player's playback.
+
+Playback controls require a connected, powered-on Crestron zone with confirmed,
+unambiguous source feedback and a loaded, available source entity with a known
+state. They disappear immediately during source/power changes and when the
+source is missing, unknown, unavailable, or unbound. An idle or off source may
+still expose Play if its integration reports it available and supports Play.
+The source integration manages and reports its physical connection; Crestron
+does not open a second connection to the device or assume a retained HA state
+means it is reachable.
+
+Each command rechecks the active binding and capabilities before forwarding
+through Home Assistant. Commands are never queued for a later selection, and
+state still follows source feedback. A failed operation hides playback controls
+until a fresh source state change or report allows recovery. Invalid arguments
+are reported without treating them as a connection failure. A command already
+dispatched belongs to its original source even if selection changes afterward.
 
 Media details disappear immediately when a source or power command starts and
 stay hidden until the processor confirms it. Power-on with a default source
 requires both power and source feedback, in either order. A command without
 feedback leaves the details hidden; pending source/power-on commands request a
 processor refresh so an unchanged selection can still be confirmed. Late updates
-from the old player cannot bring them back. External source/power changes and reconnects use current
-processor feedback and a fresh snapshot of the selected player. Source conflicts,
+from the old player cannot bring them back. External source/power changes and
+reconnects use current processor feedback and a fresh snapshot of the selected player. Source conflicts,
 an unbound/unknown source, a missing/off/unavailable player, and a disconnected
 or powered-off zone clear media details. An idle player supplies idle status
 without retaining its previous track. Missing fields in a new track replace the

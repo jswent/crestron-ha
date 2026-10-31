@@ -2,28 +2,66 @@
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
 from homeassistant.components.media_player import (
+    DATA_COMPONENT,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
+    RepeatMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    EventStateReportedData,
+    HomeAssistant,
+    State,
+    callback,
+)
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_state_report_event,
+)
 from homeassistant.util import dt as dt_util
 
 from .entity import CrestronEntity, EntityConfig, async_setup_entities
 
 _LOGGER = logging.getLogger(__name__)
+_CONTROL_PATH: ContextVar[tuple[str, ...]] = ContextVar(
+    "crestron_media_control_path", default=()
+)
+_ZONE_FEATURES = (
+    MediaPlayerEntityFeature.SELECT_SOURCE
+    | MediaPlayerEntityFeature.VOLUME_MUTE
+    | MediaPlayerEntityFeature.VOLUME_SET
+    | MediaPlayerEntityFeature.TURN_OFF
+    | MediaPlayerEntityFeature.TURN_ON
+)
+_FORWARDED_FEATURES = (
+    MediaPlayerEntityFeature.PLAY
+    | MediaPlayerEntityFeature.PAUSE
+    | MediaPlayerEntityFeature.STOP
+    | MediaPlayerEntityFeature.NEXT_TRACK
+    | MediaPlayerEntityFeature.PREVIOUS_TRACK
+    | MediaPlayerEntityFeature.SEEK
+    | MediaPlayerEntityFeature.PLAY_MEDIA
+    | MediaPlayerEntityFeature.MEDIA_ENQUEUE
+    | MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+    | MediaPlayerEntityFeature.CLEAR_PLAYLIST
+    | MediaPlayerEntityFeature.SHUFFLE_SET
+    | MediaPlayerEntityFeature.REPEAT_SET
+)
 
-# Deliberately exclude target power, source, volume, capabilities and controls.
+# Deliberately exclude target power, source, volume, and unrelated attributes.
 _MEDIA_ATTRIBUTES = (
     "media_content_id",
     "media_content_type",
@@ -63,13 +101,6 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
     """An audio zone with 16-bit volume and momentary power controls."""
 
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.VOLUME_MUTE
-        | MediaPlayerEntityFeature.VOLUME_SET
-        | MediaPlayerEntityFeature.TURN_OFF
-        | MediaPlayerEntityFeature.TURN_ON
-    )
 
     def __init__(self, entry: ConfigEntry, subentry: EntityConfig) -> None:
         super().__init__(entry, subentry)
@@ -101,6 +132,8 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             for key, entity_id in self._config.get("source_bindings", {}).items()
         }
         self._bound_state: MediaPlayerState | None = None
+        self._control_failures: dict[str, datetime] = {}
+        self._controls_active = False
         self._pending_power: bool | None = None
         self._pending_source: int | None = None
         self._source_power_lock = asyncio.Lock()
@@ -122,6 +155,7 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        self._controls_active = True
         if self._source_bindings:
             self.async_on_remove(
                 async_track_state_change_event(
@@ -130,7 +164,19 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
                     self._handle_bound_state,
                 )
             )
+            self.async_on_remove(
+                async_track_state_report_event(
+                    self.hass,
+                    set(self._source_bindings.values()) - {self.entity_id},
+                    self._handle_bound_report,
+                )
+            )
             self._refresh_bound_media()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Stop a late command result from writing after removal or live edits."""
+        self._controls_active = False
+        await super().async_will_remove_from_hass()
 
     def _binding_entity_id(self) -> str | None:
         """Only unambiguous source feedback may select a metadata provider."""
@@ -147,9 +193,30 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
 
     @callback
     def _handle_bound_state(self, event: Event[EventStateChangedData]) -> None:
-        if event.data["entity_id"] == self._binding_entity_id():
+        entity_id = event.data["entity_id"]
+        if (
+            entity_id in self._control_failures
+            and event.time_fired > self._control_failures[entity_id]
+        ):
+            # Ignore state events queued before a failed operation. A new report
+            # can restore controls only if the provider is also available again.
+            self._control_failures.pop(entity_id)
+        if entity_id == self._binding_entity_id():
             self._refresh_bound_media()
             self.async_write_ha_state()
+
+    @callback
+    def _handle_bound_report(self, event: Event[EventStateReportedData]) -> None:
+        """An unchanged but fresh provider report can also restore connectivity."""
+        entity_id = event.data["entity_id"]
+        if (
+            entity_id in self._control_failures
+            and event.time_fired > self._control_failures[entity_id]
+        ):
+            self._control_failures.pop(entity_id)
+            if entity_id == self._binding_entity_id():
+                self._refresh_bound_media()
+                self.async_write_ha_state()
 
     @callback
     def _handle_feedback(self, kind: str, join: int | None, value: Any) -> None:
@@ -185,28 +252,72 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             self._refresh_bound_media()
         self.async_write_ha_state()
 
-    @callback
-    def _refresh_bound_media(self) -> None:
-        """Replace the entire projection; absent fields never survive an update."""
-        self._bound_state = None
-        self._attr_media_image_url = None
-        for attribute in _MEDIA_ATTRIBUTES:
-            setattr(self, f"_attr_{attribute}", None)
+    def _bound_target_state(self) -> State | None:
+        """Resolve a usable source only from current, confirmed zone feedback."""
         if (
-            not self.available
+            not self._source_bindings
+            or not getattr(self, "hass", None)
+            or not self.available
             or self._bridge.get_digital(self._power_on_join) is not True
             or self._pending_power is not None
             or self._pending_source is not None
             or not (entity_id := self._binding_entity_id())
             or entity_id == self.entity_id
         ):
-            return
+            return None
         registered = er.async_get(self.hass).async_get(entity_id)
         if registered is not None and registered.platform == "crestron":
-            return
-        target = self.hass.states.get(entity_id)
+            return None
+        return self.hass.states.get(entity_id)
+
+    def _control_target(self) -> MediaPlayerEntity | None:
+        """A retained state alone cannot establish a usable control connection."""
+        state = self._bound_target_state()
+        if (
+            not self._controls_active
+            or state is None
+            or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+            or state.attributes.get("restored")
+            or state.entity_id in self._control_failures
+            or (component := self.hass.data.get(DATA_COMPONENT)) is None
+            or (target := component.get_entity(state.entity_id)) is None
+            or isinstance(target, CrestronMediaPlayer)
+            or not target.available
+        ):
+            return None
+        return target
+
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        """Expose only controls usable on the currently selected bound player."""
+        target = self._control_target()
+        features = (
+            target.supported_features & _FORWARDED_FEATURES
+            if target
+            else MediaPlayerEntityFeature(0)
+        )
+        if not features & MediaPlayerEntityFeature.PLAY_MEDIA:
+            features &= ~(
+                MediaPlayerEntityFeature.MEDIA_ENQUEUE
+                | MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+            )
+        return _ZONE_FEATURES | features
+
+    @callback
+    def _refresh_bound_media(self) -> None:
+        """Replace the entire projection; absent fields never survive an update."""
+        self._bound_state = None
+        self._attr_media_image_url = None
+        self._attr_shuffle = self._attr_repeat = None
+        for attribute in _MEDIA_ATTRIBUTES:
+            setattr(self, f"_attr_{attribute}", None)
+        target = self._bound_target_state()
         if target is None:
             return
+        if self.supported_features & MediaPlayerEntityFeature.SHUFFLE_SET:
+            self._attr_shuffle = target.attributes.get("shuffle")
+        if self.supported_features & MediaPlayerEntityFeature.REPEAT_SET:
+            self._attr_repeat = target.attributes.get("repeat")
         if target.state == MediaPlayerState.IDLE:
             self._bound_state = MediaPlayerState.IDLE
         if target.state not in _MEDIA_STATES:
@@ -229,6 +340,110 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
     def entity_picture(self) -> str | None:
         """Reuse the provider's artwork URL, including HA's authenticated proxy."""
         return self.media_image_url
+
+    async def _async_forward_control(
+        self, service: str, required: MediaPlayerEntityFeature, **data: Any
+    ) -> None:
+        """Resolve once at invocation; never retarget a command after an await."""
+        if self.entity_id in _CONTROL_PATH.get():
+            raise ServiceValidationError("A media source binding forms a control loop")
+        target = self._control_target()
+        if target is None:
+            raise ServiceValidationError(
+                "The selected source has no available bound media player"
+            )
+        if target.supported_features & required != required:
+            raise ServiceValidationError(
+                "The selected source does not support this media control"
+            )
+        entity_id = target.entity_id
+        path = _CONTROL_PATH.set((*_CONTROL_PATH.get(), self.entity_id))
+        try:
+            await self.hass.services.async_call(
+                "media_player",
+                service,
+                {**data, "entity_id": entity_id},
+                blocking=True,
+                context=self._context,
+            )
+        except ServiceValidationError:
+            raise
+        except (HomeAssistantError, ConnectionError, OSError) as err:
+            if self._controls_active:
+                self._control_failures[entity_id] = dt_util.utcnow()
+                self._refresh_bound_media()
+                self.async_write_ha_state()
+            raise HomeAssistantError(
+                "The bound media player could not complete the command; "
+                "playback controls are disabled until its state updates"
+            ) from err
+        finally:
+            _CONTROL_PATH.reset(path)
+
+    async def async_media_play(self) -> None:
+        await self._async_forward_control("media_play", MediaPlayerEntityFeature.PLAY)
+
+    async def async_media_pause(self) -> None:
+        await self._async_forward_control("media_pause", MediaPlayerEntityFeature.PAUSE)
+
+    async def async_media_play_pause(self) -> None:
+        await self._async_forward_control(
+            "media_play_pause",
+            MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PAUSE,
+        )
+
+    async def async_media_stop(self) -> None:
+        await self._async_forward_control("media_stop", MediaPlayerEntityFeature.STOP)
+
+    async def async_media_next_track(self) -> None:
+        await self._async_forward_control(
+            "media_next_track", MediaPlayerEntityFeature.NEXT_TRACK
+        )
+
+    async def async_media_previous_track(self) -> None:
+        await self._async_forward_control(
+            "media_previous_track", MediaPlayerEntityFeature.PREVIOUS_TRACK
+        )
+
+    async def async_media_seek(self, position: float) -> None:
+        await self._async_forward_control(
+            "media_seek", MediaPlayerEntityFeature.SEEK, seek_position=position
+        )
+
+    async def async_clear_playlist(self) -> None:
+        await self._async_forward_control(
+            "clear_playlist", MediaPlayerEntityFeature.CLEAR_PLAYLIST
+        )
+
+    async def async_set_shuffle(self, shuffle: bool) -> None:
+        await self._async_forward_control(
+            "shuffle_set", MediaPlayerEntityFeature.SHUFFLE_SET, shuffle=shuffle
+        )
+
+    async def async_set_repeat(self, repeat: RepeatMode) -> None:
+        await self._async_forward_control(
+            "repeat_set", MediaPlayerEntityFeature.REPEAT_SET, repeat=repeat
+        )
+
+    async def async_play_media(
+        self, media_type: str, media_id: str, **kwargs: Any
+    ) -> None:
+        required = MediaPlayerEntityFeature.PLAY_MEDIA
+        if kwargs.get("enqueue") is not None:
+            required |= MediaPlayerEntityFeature.MEDIA_ENQUEUE
+        if kwargs.get("announce"):
+            required |= MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+        await self._async_forward_control(
+            "play_media",
+            required,
+            media_content_type=media_type,
+            media_content_id=media_id,
+            **{
+                key: value
+                for key, value in kwargs.items()
+                if key in ("enqueue", "announce", "extra")
+            },
+        )
 
     @callback
     def _begin_transition(

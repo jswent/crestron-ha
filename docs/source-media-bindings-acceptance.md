@@ -1,7 +1,9 @@
 # Source media bindings: v0.2.0b1 acceptance
 
-This is a **prerelease**. Production testing and owner confirmation are required
-before a stable release. The owner will install through HACS.
+This is the historical **0.2.0b1 prerelease** acceptance record. The owner
+confirmed production is working on 2026-10-31 and requested continued prerelease
+status. See [0.2.0b2 controls acceptance](source-media-controls-acceptance.md) for
+the next iteration. Stable promotion requires a separate explicit request.
 
 ## Local evidence
 
@@ -55,8 +57,8 @@ removal, bad timestamps, and config/inventory validation.
    not retain an old track on the Crestron entity. Remove and restore the
    binding live and confirm the entity ID and Crestron connection remain stable.
 7. Report the tested HA version, zone/source and Sonos entity IDs, outcomes, and
-   any stale fields or log errors. **Only owner-confirmed production success
-   closes this feature and permits stable promotion.**
+   any stale fields or log errors. Owner-confirmed production success closes
+   acceptance; stable promotion requires a separate explicit request.
 
 Bindings only observe the source. Playback controls continue to belong to the
 Sonos/source entity; the Crestron player retains its existing controls.

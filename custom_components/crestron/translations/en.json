@@ -44,7 +44,7 @@
         },
         "mapping": {
           "title": "Standalone entity",
-          "description": "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Optional source bindings pair those same numbers with media player entity IDs, for example `1: media_player.sonos_1`. Unbound sources need no entry. Analog and serial joins: 1\u20131024; digital joins: 1\u20134096. Feedback determines state.",
+          "description": "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Optional source bindings pair those same numbers with media player entity IDs, for example `1: media_player.sonos_1`. The selected, available player supplies media information and its supported playback controls. Unbound sources need no entry. Analog and serial joins: 1\u20131024; digital joins: 1\u20134096. Feedback determines state.",
           "data": {
             "name": "Name",
             "is_on_join": "Is on join",
@@ -101,7 +101,7 @@
         },
         "reconfigure": {
           "title": "Standalone entity",
-          "description": "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Optional source bindings pair those same numbers with media player entity IDs, for example `1: media_player.sonos_1`. Unbound sources need no entry. Analog and serial joins: 1\u20131024; digital joins: 1\u20134096. Feedback determines state.",
+          "description": "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Optional source bindings pair those same numbers with media player entity IDs, for example `1: media_player.sonos_1`. The selected, available player supplies media information and its supported playback controls. Unbound sources need no entry. Analog and serial joins: 1\u20131024; digital joins: 1\u20134096. Feedback determines state.",
           "data": {
             "name": "Name",
             "is_on_join": "Is on join",

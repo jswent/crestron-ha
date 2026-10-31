@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import aiohttp
+from homeassistant.components.media_player import MediaPlayerEntityFeature as Feature
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.seed_demo import main as seed_demo
@@ -23,6 +24,18 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = "http://127.0.0.1:8124"
 ZONE = "media_player.demo_audio"
 SONOS = "media_player.sonos_1"
+PLAYBACK = (
+    Feature.PLAY
+    | Feature.PAUSE
+    | Feature.STOP
+    | Feature.NEXT_TRACK
+    | Feature.PREVIOUS_TRACK
+    | Feature.SEEK
+    | Feature.PLAY_MEDIA
+    | Feature.CLEAR_PLAYLIST
+    | Feature.SHUFFLE_SET
+    | Feature.REPEAT_SET
+)
 
 
 async def main():
@@ -48,6 +61,47 @@ async def main():
 
         async def state(entity=ZONE):
             return await request("GET", "/api/states/" + entity)
+
+        async def ws_request(message):
+            async with session.ws_connect(BASE + "/api/websocket") as ws:
+                await ws.receive_json()
+                await ws.send_json({"type": "auth", "access_token": token})
+                assert (await ws.receive_json())["type"] == "auth_ok"
+                await ws.send_json({"id": 1, **message})
+                return await ws.receive_json()
+
+        async def controls(enabled):
+            async with asyncio.timeout(5):
+                while True:
+                    features = (await state())["attributes"]["supported_features"]
+                    expected = (
+                        (await state(SONOS))["attributes"]["supported_features"]
+                        & PLAYBACK
+                        if enabled
+                        else 0
+                    )
+                    if features & PLAYBACK == expected:
+                        return
+                    await asyncio.sleep(0.02)
+
+        async def reject_control():
+            await controls(False)
+            before = await state(SONOS)
+            result = await ws_request(
+                {
+                    "type": "call_service",
+                    "domain": "media_player",
+                    "service": "media_pause",
+                    "target": {"entity_id": ZONE},
+                }
+            )
+            assert result["success"] is False, result
+            assert result["error"]["code"] == "service_validation_error", result
+            after = await state(SONOS)
+            assert (after["state"], after["last_updated"]) == (
+                before["state"],
+                before["last_updated"],
+            )
 
         async def expect(expected, *, title=None, clear=False, source=None):
             async with asyncio.timeout(5):
@@ -117,15 +171,57 @@ async def main():
             await expect("playing", title=next_title)
             passed("Pause, stop with retained provider title, and next-track updates")
 
+            await controls(True)
+            await action(ZONE, "media_pause")
+            await expect("paused", title=next_title)
+            assert (await state(SONOS))["state"] == "paused"
+            await action(ZONE, "media_play_pause")
+            await expect("playing", title=next_title)
+            await action(ZONE, "media_seek", seek_position=12.5)
+            await action(ZONE, "shuffle_set", shuffle=True)
+            await action(ZONE, "repeat_set", repeat="all")
+            for entity in (SONOS, ZONE):
+                attributes = (await state(entity))["attributes"]
+                assert attributes["media_position"] == 12.5
+                assert attributes["shuffle"] is True
+                assert attributes["repeat"] == "all"
+            await action(ZONE, "media_next_track")
+            changed_title = (await state(SONOS))["attributes"]["media_title"]
+            assert changed_title != next_title
+            await expect("playing", title=changed_title)
+            await action(ZONE, "media_previous_track")
+            await expect("playing", title=next_title)
+            await action(ZONE, "media_stop")
+            await expect("idle", clear=True)
+            await controls(True)
+            await action(ZONE, "media_play")
+            await expect("playing", title=next_title)
+            await action(ZONE, "clear_playlist")
+            await expect("idle", clear=True)
+            await action(
+                ZONE,
+                "play_media",
+                media_content_type="music",
+                media_content_id="demo:track-1",
+            )
+            await expect(
+                "playing", title=(await state(SONOS))["attributes"]["media_title"]
+            )
+            passed(
+                "Selected available source receives play/pause, tracks, seek, shuffle, repeat, stop, clear and play-media"
+            )
+
             simulator.echo = False
             await action(ZONE, "select_source", source="TV")
             current = await expect("on", clear=True)
             assert current["attributes"]["source"] == "Sonos 1"
+            await reject_control()
             await action(SONOS, "media_next_track")
             await expect("on", clear=True)
             await simulator.send_feedback("analog", 21, 2)
             current = await expect("on", clear=True, source="TV")
             assert current["attributes"]["source"] == "TV"
+            await reject_control()
             passed(
                 "Immediate clearing before source feedback; late old-player updates ignored"
             )
@@ -136,6 +232,7 @@ async def main():
             await expect("playing", title=current_title)
             await action(ZONE, "turn_off")
             await expect("off", clear=True)
+            await reject_control()
             await action(SONOS, "media_next_track")
             await expect("off", clear=True)
             await action(ZONE, "turn_on")
@@ -152,8 +249,10 @@ async def main():
                 },
             )
             await expect("on", clear=True)
+            await reject_control()
             await action(SONOS, "media_play")
             await expect("playing", title=current_title)
+            await controls(True)
             passed(
                 "Unavailable target clears metadata without disabling the zone; recovery works"
             )
@@ -200,6 +299,7 @@ async def main():
                     await expect("playing", title=current_title)
                 else:
                     await expect("on", clear=True)
+                    await reject_control()
                 assert simulator.writer is original_writer
             passed(
                 "Live binding removal/restoration preserves entity ID and processor connection"

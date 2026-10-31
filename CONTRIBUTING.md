@@ -25,12 +25,18 @@ uv run python tools/dev.py
 
 For source media binding work, use `uv run python tools/dev.py --media-demo`.
 This adds `media_player.sonos_1`, a development-only player with two sample
-tracks, artwork, and working play, pause, stop, next, previous, and power actions.
+tracks, artwork, and working play, pause, stop, next, previous, seek, shuffle,
+repeat, clear-playlist, play-media, and power actions. Play-media accepts
+`demo:track-1` or `demo:track-2` with content type `music`.
 The demo audio mapping binds source 1 to it and leaves TV unbound. The player is
 loaded after each dev HA restart; it does not need Sonos hardware. It is not
 included in the production `custom_components/crestron` integration.
 
 Open http://127.0.0.1:8124 and complete onboarding. The instance keeps its configuration in `dev/config/`, which Git ignores, and loads the integration straight from this checkout. It listens on loopback only. Stop it with Ctrl-C.
+
+If HA shows a pending HTTP configuration notification after migrating the YAML
+settings, confirm the working loopback configuration within five minutes. This
+keeps the dev instance on `127.0.0.1:8124` across restarts.
 
 Changes to Python source need an integration reload or a restart of this process. Mapping edits apply on their own.
 
@@ -86,7 +92,9 @@ uv run python tools/check_media_bindings_live.py
 The check seeds the Demo bridge if needed and runs its own TCP simulator. It
 checks playback/artwork, pause/stop/track changes, delayed source confirmation,
 late updates, unbound TV, latched power cycles, an unavailable target, live
-binding edits, and reconnects through HA's real APIs. Results are saved to
+binding edits, and reconnects through HA's real APIs. It also sends playback
+commands through the Crestron entity and verifies rejection during transitions,
+on unbound sources, while off, and while the source is unavailable. Results are saved to
 `dev/config/source-binding-acceptance.json`. Start the interactive simulator
 again afterward to inspect the example in the UI.
 

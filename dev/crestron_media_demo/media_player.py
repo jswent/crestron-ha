@@ -6,6 +6,7 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
 )
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
 TRACKS = (
@@ -32,12 +33,19 @@ class SonosDemo(MediaPlayerEntity):
         | MediaPlayerEntityFeature.STOP
         | MediaPlayerEntityFeature.NEXT_TRACK
         | MediaPlayerEntityFeature.PREVIOUS_TRACK
+        | MediaPlayerEntityFeature.SEEK
+        | MediaPlayerEntityFeature.SHUFFLE_SET
+        | MediaPlayerEntityFeature.REPEAT_SET
+        | MediaPlayerEntityFeature.CLEAR_PLAYLIST
+        | MediaPlayerEntityFeature.PLAY_MEDIA
         | MediaPlayerEntityFeature.TURN_ON
         | MediaPlayerEntityFeature.TURN_OFF
     )
 
     def __init__(self):
         self._track = 0
+        self._attr_shuffle = False
+        self._attr_repeat = "off"
         self._attr_state = MediaPlayerState.PLAYING
         self._load_track()
 
@@ -84,3 +92,29 @@ class SonosDemo(MediaPlayerEntity):
     async def async_turn_off(self):
         self._attr_state = MediaPlayerState.OFF
         self.async_write_ha_state()
+
+    async def async_media_seek(self, position):
+        if not 0 <= position <= self._attr_media_duration:
+            raise ServiceValidationError("Position is outside this demo track")
+        self._attr_media_position = position
+        self._attr_media_position_updated_at = dt_util.utcnow()
+        self.async_write_ha_state()
+
+    async def async_set_shuffle(self, shuffle):
+        self._attr_shuffle = shuffle
+        self.async_write_ha_state()
+
+    async def async_set_repeat(self, repeat):
+        self._attr_repeat = repeat
+        self.async_write_ha_state()
+
+    async def async_clear_playlist(self):
+        await self.async_media_stop()
+
+    async def async_play_media(self, media_type, media_id, **kwargs):
+        if media_type != "music" or media_id not in ("demo:track-1", "demo:track-2"):
+            raise ServiceValidationError(
+                "Choose demo:track-1 or demo:track-2 with type music"
+            )
+        self._track = int(media_id[-1]) - 1
+        await self.async_media_play()

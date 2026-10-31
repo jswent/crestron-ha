@@ -1,5 +1,10 @@
 # Source media bindings: implementation and acceptance plan
 
+Historical plan for `0.2.0b1`. On 2026-10-31 the owner confirmed production is
+working and requested continued prerelease status. The next iteration is the
+[0.2.0b2 controls plan](source-media-controls-plan.md); stable promotion now
+requires a separate explicit request, even after successful production testing.
+
 Branch: `codex/source-media-bindings`
 
 Prerelease target: `0.2.0b1` / `v0.2.0b1`
@@ -61,4 +66,5 @@ Subscriptions are removed on unload and replaced on live mapping edits.
   and config/bulk flows are additionally covered by automated tests.
 - Prerelease: `v0.2.0b1`; publication follows GitHub CI validation. Stable remains
   `v0.1.1`, and this feature branch remains unmerged pending production testing.
-- Production installation and owner-confirmed testing: pending (final gate).
+- Production installation and owner-confirmed testing: confirmed working by the
+  owner on 2026-10-31. Keep prerelease status per the owner's instruction.
