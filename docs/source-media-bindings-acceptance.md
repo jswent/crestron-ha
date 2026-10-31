@@ -6,16 +6,16 @@ before a stable release. The owner will install through HACS.
 ## Local evidence
 
 - Baseline: 214 passing tests before the change.
-- Final suite: 254 passing tests; 97% integration statement coverage and 100%
+- Final suite: 256 passing tests; 97% integration statement coverage and 100%
   media player statement coverage.
 - Ruff lint, Ruff formatting, and `git diff --check`: passed.
 - Home Assistant 2026.9.4 with the checkout loaded as a custom integration and
-  the XSIG simulator connected over actual loopback TCP: passed all seven live
+  the XSIG simulator connected over actual loopback TCP: passed all eight live
   acceptance groups in `tools/check_media_bindings_live.py`.
 - A persistent `media_player.sonos_1` demo entity provides two tracks, artwork,
   and real HA playback actions. Demo audio source 1 binds to it; TV is unbound.
 - API checks confirmed reachable artwork, playback and track changes, immediate
-  clearing before source feedback, late-update suppression, latched power
+  clearing before source feedback, unchanged-feedback refreshes, late-update suppression, latched power
   cycles, unavailable-target recovery, live binding edits without a reconnect,
   and processor disconnect/reconnect behavior.
 

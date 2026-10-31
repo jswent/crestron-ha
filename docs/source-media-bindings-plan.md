@@ -19,7 +19,8 @@ Bindings observe state only; transport controls are outside this feature.
 Media details are cleared synchronously when a source or power command starts.
 They cannot return from an old source update while processor confirmation is
 pending. Source and power feedback select the current binding without retaining
-old fields. Off, unknown power/source, conflicting digital source feedback,
+old fields. Pending source/power-on commands request a refresh, allowing unchanged
+non-zero XSIG feedback to confirm the current selection. Off, unknown power/source, conflicting digital source feedback,
 disconnect, missing/unavailable targets, and target stop/off clear media details.
 Only playing/paused/buffering targets contribute track metadata; idle contributes
 status without a retained track. No arbitrary target attributes or capabilities
@@ -51,12 +52,12 @@ Subscriptions are removed on unload and replaced on live mapping edits.
 ## Acceptance evidence
 
 - Baseline: 214 tests passed.
-- Automated tests: 254 passed, with 97% integration coverage and 100% statement
+- Automated tests: 256 passed, with 97% integration coverage and 100% statement
   coverage for the media player platform; Ruff lint/format and diff checks pass.
-- Running local HA plus simulator: all seven acceptance groups passed on
+- Running local HA plus simulator: all eight acceptance groups passed on
   Home Assistant 2026.9.4. The persistent `media_player.sonos_1` fixture supports
   real play/pause/stop/track/power actions. Analog and digital selector behavior,
-  both feedback orders, concurrent commands, malformed timestamps, direct loops,
+  unchanged feedback refreshes, both feedback orders, concurrent commands, malformed timestamps, direct loops,
   and config/bulk flows are additionally covered by automated tests.
 - Prerelease: `v0.2.0b1`; publication follows GitHub CI validation. Stable remains
   `v0.1.1`, and this feature branch remains unmerged pending production testing.

@@ -272,8 +272,9 @@ play/pause, next-track, seek, or other playback commands.
 Media details disappear immediately when a source or power command starts and
 stay hidden until the processor confirms it. Power-on with a default source
 requires both power and source feedback, in either order. A command without
-feedback leaves the details hidden; late updates from the old player cannot
-bring them back. External source/power changes and reconnects use current
+feedback leaves the details hidden; pending source/power-on commands request a
+processor refresh so an unchanged selection can still be confirmed. Late updates
+from the old player cannot bring them back. External source/power changes and reconnects use current
 processor feedback and a fresh snapshot of the selected player. Source conflicts,
 an unbound/unknown source, a missing/off/unavailable player, and a disconnected
 or powered-off zone clear media details. An idle player supplies idle status

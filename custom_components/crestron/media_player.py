@@ -302,6 +302,14 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
         async with self._source_power_lock:
             self._begin_transition(source=selector)
             await self._async_select_source(selector)
+            await self._async_request_bound_feedback()
+
+    async def _async_request_bound_feedback(self) -> None:
+        """XSIG may omit unchanged feedback until explicitly asked to refresh."""
+        if self._source_bindings and (
+            self._pending_power is not None or self._pending_source is not None
+        ):
+            await self._async_command(self._bridge.request_update)
 
     async def _async_select_source(self, selector: int) -> None:
         """Send selection within an already established transition."""
@@ -319,6 +327,7 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             await self._async_command(self._bridge.pulse_digital, self._power_on_join)
             if self._default_source is not None:
                 await self._async_select_source(self._default_source)
+            await self._async_request_bound_feedback()
 
     async def async_turn_off(self) -> None:
         """Pulse power and clear the legacy analog source selector."""

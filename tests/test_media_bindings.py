@@ -9,7 +9,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from tests.test_integration import eventually, setup_bridge, subentry
 from tests.test_platforms import MEDIA, FakeBridge
+from tools.xsig_simulator import Simulator
 
 SONOS = "media_player.sonos_1"
 OTHER = "media_player.sonos_2"
@@ -364,3 +366,80 @@ async def test_overlapping_power_and_source_commands_keep_wire_order(hass, zone)
     assert_clear(hass.states.get(entity_id))
     feedback_source(2)
     assert hass.states.get(entity_id).attributes["media_title"] == "Second track"
+
+
+@pytest.mark.parametrize("digital", [False, True])
+async def test_real_xsig_refresh_confirms_unchanged_source_and_power(
+    hass, unused_tcp_port, digital
+):
+    config = {**MEDIA, "default_source": 1, "source_bindings": {"1": SONOS, "2": OTHER}}
+    if digital:
+        config.pop("source_number_join")
+        config.pop("sources")
+        config.update(
+            source_digital_joins={"41": "Radio", "42": "Music"},
+            default_source=41,
+            source_bindings={"41": SONOS, "42": OTHER},
+        )
+    hass.states.async_set(SONOS, "playing", TRACK)
+    hass.states.async_set(OTHER, "paused", {"media_title": "Second track"})
+    entry = await setup_bridge(
+        hass,
+        unused_tcp_port,
+        mappings=[
+            subentry("entity", {"platform": "media_player", "name": "Zone", **config})
+        ],
+    )
+    entity_id = er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)[
+        0
+    ].entity_id
+    # This peer never echoes commands. Only a refresh returns its existing
+    # non-zero feedback, just as an unchanged signal in a real XSIG program.
+    simulator = Simulator(
+        {"digital": {"1": True, "41": True}, "analog": {"4": 32768, "5": 1}}, echo=False
+    )
+    peer = asyncio.create_task(
+        simulator.run_session("127.0.0.1", entry.runtime_data.bound_port)
+    )
+    transitions = []
+
+    def changed(event):
+        if event.data["entity_id"] == entity_id and event.data["new_state"]:
+            transitions.append(event.data["new_state"].state)
+
+    unsubscribe = hass.bus.async_listen("state_changed", changed)
+    try:
+        await eventually(lambda: hass.states.get(entity_id).state == "playing")
+        for action, data in (("select_source", {"source": "Radio"}), ("turn_on", {})):
+            transitions.clear()
+            await hass.services.async_call(
+                "media_player", action, {"entity_id": entity_id, **data}, blocking=True
+            )
+            await eventually(lambda: hass.states.get(entity_id).state == "playing")
+            await hass.async_block_till_done()
+            assert "on" in transitions
+            assert transitions[-1] == "playing"
+            assert (
+                hass.states.get(entity_id).attributes["media_title"]
+                == TRACK["media_title"]
+            )
+        # Refreshing the previous source must NOT confirm a different request.
+        await hass.services.async_call(
+            "media_player",
+            "select_source",
+            {"entity_id": entity_id, "source": "Music"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+        assert_clear(hass.states.get(entity_id))
+        if digital:
+            await simulator.send_feedback("digital", 41, False)
+            await simulator.send_feedback("digital", 42, True)
+        else:
+            await simulator.send_feedback("analog", 5, 2)
+        await eventually(lambda: hass.states.get(entity_id).state == "paused")
+        assert hass.states.get(entity_id).attributes["media_title"] == "Second track"
+    finally:
+        unsubscribe()
+        await hass.config_entries.async_unload(entry.entry_id)
+        await asyncio.wait_for(peer, 2)

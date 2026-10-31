@@ -49,7 +49,7 @@ async def main():
         async def state(entity=ZONE):
             return await request("GET", "/api/states/" + entity)
 
-        async def expect(expected, *, title=None, clear=False):
+        async def expect(expected, *, title=None, clear=False, source=None):
             async with asyncio.timeout(5):
                 while True:
                     current = await state()
@@ -63,6 +63,7 @@ async def main():
                         current["state"] == expected
                         and (title is None or attrs.get("media_title") == title)
                         and (not clear or clean)
+                        and (source is None or attrs.get("source") == source)
                     ):
                         return current
                     await asyncio.sleep(0.02)
@@ -98,6 +99,14 @@ async def main():
                 assert "svg" in response.headers["Content-Type"]
             passed("Bound playback, metadata, reachable artwork and Crestron volume")
 
+            simulator.echo = False
+            await action(ZONE, "select_source", source="Sonos 1")
+            await expect("playing", title=first_title)
+            await action(ZONE, "turn_on")
+            await expect("playing", title=first_title)
+            simulator.echo = True
+            passed("Unchanged source/power confirmed by explicit XSIG refresh")
+
             await action(SONOS, "media_pause")
             await expect("paused", title=first_title)
             await action(SONOS, "media_stop")
@@ -115,7 +124,7 @@ async def main():
             await action(SONOS, "media_next_track")
             await expect("on", clear=True)
             await simulator.send_feedback("analog", 21, 2)
-            current = await expect("on", clear=True)
+            current = await expect("on", clear=True, source="TV")
             assert current["attributes"]["source"] == "TV"
             passed(
                 "Immediate clearing before source feedback; late old-player updates ignored"

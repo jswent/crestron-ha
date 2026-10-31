@@ -62,6 +62,7 @@ class FakeBridge:
         self.set_analog = AsyncMock()
         self.set_serial = AsyncMock()
         self.pulse_digital = AsyncMock()
+        self.request_update = AsyncMock()
         self.configuration_lock = asyncio.Lock()
         self.listener_config = None
         self.start = AsyncMock(side_effect=self._start_listener)
