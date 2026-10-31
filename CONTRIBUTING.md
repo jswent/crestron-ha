@@ -23,6 +23,13 @@ CI runs the same commands, plus Home Assistant's hassfest validator and the HACS
 uv run python tools/dev.py
 ```
 
+For source media binding work, use `uv run python tools/dev.py --media-demo`.
+This adds `media_player.sonos_1`, a development-only player with two sample
+tracks, artwork, and working play, pause, stop, next, previous, and power actions.
+The demo audio mapping binds source 1 to it and leaves TV unbound. The player is
+loaded after each dev HA restart; it does not need Sonos hardware. It is not
+included in the production `custom_components/crestron` integration.
+
 Open http://127.0.0.1:8124 and complete onboarding. The instance keeps its configuration in `dev/config/`, which Git ignores, and loads the integration straight from this checkout. It listens on loopback only. Stop it with Ctrl-C.
 
 Changes to Python source need an integration reload or a restart of this process. Mapping edits apply on their own.
@@ -65,6 +72,23 @@ Useful options:
 - Scenario files can redirect feedback to another join and schedule timed changes and disconnects. The format is documented at the top of `tools/xsig_simulator.py`.
 
 Run several simulators on different ports to exercise several bridges. The echo is generic: pulsed commands release to false, so latched behavior such as a thermostat mode needs feedback injected from the console or a scenario.
+
+The demo scenario uses `pulse_feedback` to latch audio power: join 21 sets power
+feedback high and join 22 sets it low; button releases do not change power.
+
+For a repeatable source binding acceptance run, start HA with `--media-demo`,
+stop any separate simulator, set the local `HA_TOKEN`, and run:
+
+```sh
+uv run python tools/check_media_bindings_live.py
+```
+
+The check seeds the Demo bridge if needed and runs its own TCP simulator. It
+checks playback/artwork, pause/stop/track changes, delayed source confirmation,
+late updates, unbound TV, latched power cycles, an unavailable target, live
+binding edits, and reconnects through HA's real APIs. Results are saved to
+`dev/config/source-binding-acceptance.json`. Start the interactive simulator
+again afterward to inspect the example in the UI.
 
 ## Debug in VS Code
 

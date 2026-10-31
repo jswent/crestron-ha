@@ -27,12 +27,13 @@ labels.update(
         "manufacturer": "Manufacturer (optional)",
         "model": "Model (optional)",
         "entities": "Entity features",
+        "source_bindings": "Source media player bindings (optional)",
     }
 )
-entity_description = "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Analog and serial joins: 1–1024; digital joins: 1–4096. Feedback determines state."
+entity_description = "Create a standalone signal without a device. Use Physical device to group several features of the same hardware. Map the joins wired in your Crestron program. Source maps pair each source number or digital join with a name, one per line, for example `1: Music` and `2: TV`. Optional source bindings pair those same numbers with media player entity IDs, for example `1: media_player.sonos_1`. Unbound sources need no entry. Analog and serial joins: 1–1024; digital joins: 1–4096. Feedback determines state."
 bridge_description = "A bridge is one independent XSIG listener. Crestron connects to Home Assistant on this port. Use a different port for every bridge; 0.0.0.0 listens on all local IPv4 interfaces. Listen address belongs to this Home Assistant machine, not the Crestron processor. A processor does not need to be connected to save configuration."
 errors = {
-    "invalid_mapping": "Check join ranges and required fields. Media players need either an analog source join and source map, or a digital source map. Source names must be unique and the default must exist. Export joins must be unique and templates valid."
+    "invalid_mapping": "Check join ranges and required fields. Media players need either an analog source join and source map, or a digital source map. Source names must be unique and the default must exist. Source bindings must use configured source numbers and one media_player entity ID per source. Export joins must be unique and templates valid."
 }
 strings = {
     "title": "Crestron XSIG",

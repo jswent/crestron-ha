@@ -6,5 +6,5 @@
   {"platform": "switch", "name": "Demo relay", "switch_join": 2},
   {"platform": "cover", "name": "Demo shade", "pos_join": 3, "stop_join": 3, "is_opening_join": 30, "is_closing_join": 31, "is_closed_join": 32},
   {"platform": "climate", "name": "Demo thermostat", "heat_sp_join": 10, "cool_sp_join": 11, "reg_temp_join": 12, "mode_heat_join": 10, "mode_cool_join": 11, "mode_auto_join": 12, "mode_off_join": 13, "fan_on_join": 14, "fan_auto_join": 15, "h1_join": 16, "temperature_unit": "F"},
-  {"platform": "media_player", "name": "Demo audio", "power_on_join": 21, "power_off_join": 22, "mute_join": 23, "volume_join": 20, "source_number_join": 21, "sources": {"1": "Music", "2": "TV"}, "default_source": 1}
+  {"platform": "media_player", "name": "Demo audio", "power_on_join": 21, "power_off_join": 22, "mute_join": 23, "volume_join": 20, "source_number_join": 21, "sources": {"1": "Sonos 1", "2": "TV"}, "default_source": 1, "source_bindings": {"1": "media_player.sonos_1"}}
 ]

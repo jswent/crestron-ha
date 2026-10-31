@@ -1,6 +1,6 @@
 [project]
 name = "crestron-ha"
-version = "0.1.1"
+version = "0.2.0b1"
 description = "Home Assistant integration for independently configured Crestron XSIG bridges"
 requires-python = ">=3.14.2"
 dependencies = []

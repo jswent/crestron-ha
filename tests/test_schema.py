@@ -102,6 +102,47 @@ def test_digital_sources_have_independent_join_bounds():
         validate_entity("media_player", data)
 
 
+def test_optional_source_bindings_normalize_and_allow_partial_mapping():
+    result = validate_entity(
+        "media_player", media_mapping(source_bindings={1: "media_player.sonos_1"})
+    )
+    assert result["source_bindings"] == {"1": "media_player.sonos_1"}
+    assert (
+        validate_entity("media_player", media_mapping(source_bindings={}))[
+            "source_bindings"
+        ]
+        == {}
+    )
+    assert "source_bindings" not in validate_entity("media_player", media_mapping())
+    data = media_mapping(source_bindings={4096: "media_player.sonos_1"})
+    del data["sources"]
+    del data["source_number_join"]
+    data["source_digital_joins"] = {4096: "Sonos 1"}
+    assert validate_entity("media_player", data)["source_bindings"] == {
+        "4096": "media_player.sonos_1"
+    }
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [
+        {3: "media_player.sonos_1"},
+        {1: "light.sonos_1"},
+        {1: "media_player.invalid entity"},
+        {1: ""},
+        {1: None},
+        {1: ["media_player.sonos_1"]},
+        {1: "media_player.sonos_1", "01": "media_player.sonos_2"},
+        {True: "media_player.sonos_1"},
+        {1.5: "media_player.sonos_1"},
+        [],
+    ],
+)
+def test_invalid_source_bindings(bindings):
+    with pytest.raises(vol.Invalid):
+        validate_entity("media_player", media_mapping(source_bindings=bindings))
+
+
 async def test_action_validation_compiles_templates(hass: HomeAssistant):
     """Persist source actions: HA validation creates non-JSON runtime objects."""
     actions = [
