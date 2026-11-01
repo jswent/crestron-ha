@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <rect width="400" height="400" fill="#183f4c"/>
+  <circle cx="200" cy="165" r="104" fill="#e6c17b"/>
+  <circle cx="200" cy="165" r="70" fill="#183f4c"/>
+  <circle cx="200" cy="165" r="10" fill="#e6c17b"/>
+  <text x="200" y="318" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#fff">SOURCE SESSIONS</text>
+  <text x="200" y="352" text-anchor="middle" font-family="sans-serif" font-size="16" fill="#e6c17b">SONOS 1 · LOCAL DEMO</text>
+</svg>

@@ -125,6 +125,7 @@ def entity_fields(platform):
             vol.Optional("source_number_join"): ANALOG,
             vol.Optional("sources"): dict,
             vol.Optional("source_digital_joins"): dict,
+            vol.Optional("source_bindings"): dict,
             vol.Optional("default_source"): vol.All(
                 integer, vol.Range(min=1, max=65535)
             ),
@@ -191,6 +192,18 @@ def validate_entity(platform, data):
         if not normalized or len(set(normalized.values())) != len(normalized):
             raise vol.Invalid("Source names must be unique and nonempty")
         result[key] = normalized
+        if "source_bindings" in result:
+            bindings = {}
+            for number, entity_id in result["source_bindings"].items():
+                number = str(integer(number))
+                if number not in normalized:
+                    raise vol.Invalid("Bound source must be configured")
+                if number in bindings:
+                    raise vol.Invalid("Duplicate source binding")
+                bindings[number] = vol.All(
+                    cv.entity_id, cv.entity_domain("media_player")
+                )(entity_id)
+            result["source_bindings"] = bindings
         if (
             "default_source" in result
             and str(result["default_source"]) not in normalized
@@ -206,7 +219,7 @@ def entity_form(platform, defaults=None):
         name = str(key)
         if defaults and name in defaults:
             key = type(key)(name, description={"suggested_value": defaults[name]})
-        if name in ("sources", "source_digital_joins"):
+        if name in ("sources", "source_digital_joins", "source_bindings"):
             widget = selector.ObjectSelector()
         elif name == "pulsed":
             widget = selector.BooleanSelector()

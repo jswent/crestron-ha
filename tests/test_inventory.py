@@ -135,6 +135,32 @@ def test_import_upserts_stable_keys_without_mutating_input(hass, entry):
     )
 
 
+def test_source_bindings_round_trip_in_standalone_and_device_inventory(hass, entry):
+    from tests.test_schema import media_mapping
+
+    config = {
+        "platform": "media_player",
+        **media_mapping(source_bindings={1: "media_player.sonos_1"}),
+    }
+    inventory = {
+        "entities": [{"key": "zone", **config}],
+        "devices": [
+            {"key": "amp", "name": "Amplifier", "entities": [{"id": "audio", **config}]}
+        ],
+    }
+    apply_import(hass, entry, prepare_import(hass, entry, inventory))
+    exported = export_inventory(entry)
+    assert exported["entities"][0]["source_bindings"] == {"1": "media_player.sonos_1"}
+    assert exported["devices"][0]["entities"][0]["source_bindings"] == {
+        "1": "media_player.sonos_1"
+    }
+    inventory["entities"][0]["source_bindings"] = {3: "media_player.sonos_1"}
+    before = export_inventory(entry)
+    with pytest.raises(vol.Invalid):
+        prepare_import(hass, entry, inventory)
+    assert export_inventory(entry) == before
+
+
 def test_import_preserves_omitted_mappings_and_device_features(hass, entry):
     apply_import(hass, entry, prepare_import(hass, entry, sample_inventory()))
     thermostat = device("Updated station")
