@@ -45,7 +45,6 @@ class SourcePlayer(MediaPlayerEntity):
         PLAYBACK
         | BASE
         | Feature.GROUPING
-        | Feature.BROWSE_MEDIA
         | Feature.SEARCH_MEDIA
         | Feature.SELECT_SOUND_MODE
         | Feature.VOLUME_STEP

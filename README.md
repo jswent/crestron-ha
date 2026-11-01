@@ -272,7 +272,7 @@ Starting with `0.2.0b2`, the selected binding also enables the source player's
 supported playback controls: play/pause, stop, previous/next track, seek,
 shuffle, repeat, clear playlist, and play-media. Play-media forwards enqueue and
 announcement options only when the source supports them. Grouping, sound modes,
-media browsing, and search remain on the source entity. Several zones selecting
+and provider-specific search remain on the source entity. Several zones selecting
 the same player control that shared player's playback.
 
 Playback controls require a connected, powered-on Crestron zone with confirmed,
@@ -306,6 +306,38 @@ previous values with empty fields.
 Bindings to this or another Crestron media player are ignored to prevent direct
 feedback loops. Use the original source player, such as the Sonos integration's
 entity. A bound player's failure does not disable the zone's Crestron controls.
+
+#### Browse and select media
+
+Starting with `0.2.0b3`, a selected binding that supports **Browse Media** also
+makes the Crestron zone available in Home Assistant's media browser. Turn the
+zone on, select its bound source, open **Media**, and choose the Crestron zone
+in the player selector. Browse the source's folders, albums, or favorites and
+select an item to play it through that source. Existing bindings need no edits.
+
+The catalog, content types, and artwork come from the source player. Browsing
+is enabled only while that player is loaded, available, and advertises browse
+support; a player supporting playback alone does not enable it. Sources that
+browse but lack Play Media can be viewed without playable items. Changing source,
+power, or availability while a browse request is in progress discards its result.
+
+Provider-specific selections carry a stable reference to their source. An item
+browsed from Sonos 1 cannot accidentally be sent to Sonos 2: select Sonos 1 again
+or reopen the browser for the new source. These IDs can be saved by the media
+picker in scripts and remain valid across restarts as long as the provider's
+entity ID is unchanged. Another zone selecting that same provider can use them.
+Direct `play_media` calls with the provider's original IDs still work.
+
+Native `media-source://` IDs retain Home Assistant's behavior, including local
+media, TTS forms, and supported media-source searches. These global IDs route
+to the currently selected eligible player, whose integration resolves them.
+Provider-specific search is not forwarded; unsupported search buttons are hidden.
+Artwork retains the source player's original proxy URL and authentication token.
+
+If a source advertises browsing but does not implement it, browsing is hidden
+after the error until that source integration reloads. Other playback controls
+remain available. See the [production browser test](docs/source-media-browse-acceptance.md)
+for validation and rollback.
 
 ## Bulk configuration
 

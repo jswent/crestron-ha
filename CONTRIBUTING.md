@@ -24,12 +24,12 @@ uv run python tools/dev.py
 ```
 
 For source media binding work, use `uv run python tools/dev.py --media-demo`.
-This adds `media_player.sonos_1`, a development-only player with two sample
-tracks, artwork, and working play, pause, stop, next, previous, seek, shuffle,
+This adds `media_player.sonos_1` and `media_player.sonos_2`, development-only players
+with nested album catalogs, two sample tracks, artwork proxies, and working play, pause, stop, next, previous, seek, shuffle,
 repeat, clear-playlist, play-media, and power actions. Play-media accepts
-`demo:track-1` or `demo:track-2` with content type `music`.
-The demo audio mapping binds source 1 to it and leaves TV unbound. The player is
-loaded after each dev HA restart; it does not need Sonos hardware. It is not
+`demo:track-1` or `demo:track-2` with content type `music`, or `demo:album` with type `album`.
+The demo audio mapping binds sources 1 and 3 to these players and leaves TV
+unbound. They load after each dev HA restart and do not need Sonos hardware. They are not
 included in the production `custom_components/crestron` integration.
 
 Open http://127.0.0.1:8124 and complete onboarding. The instance keeps its configuration in `dev/config/`, which Git ignores, and loads the integration straight from this checkout. It listens on loopback only. Stop it with Ctrl-C.
@@ -94,7 +94,10 @@ checks playback/artwork, pause/stop/track changes, delayed source confirmation,
 late updates, unbound TV, latched power cycles, an unavailable target, live
 binding edits, and reconnects through HA's real APIs. It also sends playback
 commands through the Crestron entity and verifies rejection during transitions,
-on unbound sources, while off, and while the source is unavailable. Results are saved to
+on unbound sources, while off, and while the source is unavailable. Browser checks
+use the frontend's WebSocket API, fetch provider artwork, play a selected track
+and album, and verify that old selections cannot cross to a different source.
+Results are saved to
 `dev/config/source-binding-acceptance.json`. Start the interactive simulator
 again afterward to inspect the example in the UI.
 

@@ -8,12 +8,14 @@ from typing import Any
 
 from homeassistant.components.media_player import (
     DATA_COMPONENT,
+    BrowseMedia,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
     RepeatMode,
 )
+from homeassistant.components.media_player.errors import BrowseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import (
@@ -34,6 +36,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .entity import CrestronEntity, EntityConfig, async_setup_entities
+from .media_browse import scope_browse_media, unwrap_media_id
 
 _LOGGER = logging.getLogger(__name__)
 _CONTROL_PATH: ContextVar[tuple[str, ...]] = ContextVar(
@@ -59,6 +62,7 @@ _FORWARDED_FEATURES = (
     | MediaPlayerEntityFeature.CLEAR_PLAYLIST
     | MediaPlayerEntityFeature.SHUFFLE_SET
     | MediaPlayerEntityFeature.REPEAT_SET
+    | MediaPlayerEntityFeature.BROWSE_MEDIA
 )
 
 # Deliberately exclude target power, source, volume, and unrelated attributes.
@@ -134,6 +138,8 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
         self._bound_state: MediaPlayerState | None = None
         self._control_failures: dict[str, datetime] = {}
         self._controls_active = False
+        self._browse_revision = 0
+        self._browse_unimplemented: dict[str, MediaPlayerEntity] = {}
         self._pending_power: bool | None = None
         self._pending_source: int | None = None
         self._source_power_lock = asyncio.Lock()
@@ -142,6 +148,7 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
         self._watch(
             "digital", self._power_on_join, self._mute_join, *self._source_digital_joins
         )
+        self._browse_feedback_context = self._selection_context()
 
     @property
     def state(self) -> MediaPlayerState | None:
@@ -176,10 +183,11 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Stop a late command result from writing after removal or live edits."""
         self._controls_active = False
+        self._browse_revision += 1
         await super().async_will_remove_from_hass()
 
-    def _binding_entity_id(self) -> str | None:
-        """Only unambiguous source feedback may select a metadata provider."""
+    def _source_selector(self) -> int | None:
+        """Return only an unambiguous, feedback-confirmed source selector."""
         if self._source_number_join is not None:
             selector = self._bridge.get_analog(self._source_number_join)
         else:
@@ -189,7 +197,17 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
                 if self._bridge.get_digital(join)
             ]
             selector = active[0] if len(active) == 1 else None
-        return self._source_bindings.get(selector)
+        return selector
+
+    def _binding_entity_id(self) -> str | None:
+        return self._source_bindings.get(self._source_selector())
+
+    def _selection_context(self) -> tuple[bool, bool | None, int | None]:
+        return (
+            self.available,
+            self._bridge.get_digital(self._power_on_join),
+            self._source_selector(),
+        )
 
     @callback
     def _handle_bound_state(self, event: Event[EventStateChangedData]) -> None:
@@ -202,6 +220,14 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             # can restore controls only if the provider is also available again.
             self._control_failures.pop(entity_id)
         if entity_id == self._binding_entity_id():
+            before, after = (
+                state is not None
+                and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+                and not state.attributes.get("restored")
+                for state in (event.data["old_state"], event.data["new_state"])
+            )
+            if before != after:
+                self._browse_revision += 1
             self._refresh_bound_media()
             self.async_write_ha_state()
 
@@ -222,6 +248,9 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
     def _handle_feedback(self, kind: str, join: int | None, value: Any) -> None:
         if kind not in ("available", "refreshed") and (kind, join) not in self._watched:
             return
+        if (selection := self._selection_context()) != self._browse_feedback_context:
+            self._browse_feedback_context = selection
+            self._browse_revision += 1
         if kind == "available":
             # A new connection establishes a new feedback baseline.
             self._pending_power = self._pending_source = None
@@ -301,6 +330,8 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
                 MediaPlayerEntityFeature.MEDIA_ENQUEUE
                 | MediaPlayerEntityFeature.MEDIA_ANNOUNCE
             )
+        if target and self._browse_unimplemented.get(target.entity_id) is target:
+            features &= ~MediaPlayerEntityFeature.BROWSE_MEDIA
         return _ZONE_FEATURES | features
 
     @callback
@@ -341,10 +372,10 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
         """Reuse the provider's artwork URL, including HA's authenticated proxy."""
         return self.media_image_url
 
-    async def _async_forward_control(
-        self, service: str, required: MediaPlayerEntityFeature, **data: Any
-    ) -> None:
-        """Resolve once at invocation; never retarget a command after an await."""
+    def _require_control_target(
+        self, required: MediaPlayerEntityFeature
+    ) -> MediaPlayerEntity:
+        """Apply the same availability and loop guards to reads and commands."""
         if self.entity_id in _CONTROL_PATH.get():
             raise ServiceValidationError("A media source binding forms a control loop")
         target = self._control_target()
@@ -352,10 +383,29 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             raise ServiceValidationError(
                 "The selected source has no available bound media player"
             )
-        if target.supported_features & required != required:
+        if target.supported_features & required != required or (
+            required & MediaPlayerEntityFeature.BROWSE_MEDIA
+            and self._browse_unimplemented.get(target.entity_id) is target
+        ):
             raise ServiceValidationError(
                 "The selected source does not support this media control"
             )
+        return target
+
+    @callback
+    def _record_control_failure(self, entity_id: str) -> None:
+        if self._controls_active:
+            self._control_failures[entity_id] = dt_util.utcnow()
+            if entity_id == self._binding_entity_id():
+                self._browse_revision += 1
+            self._refresh_bound_media()
+            self.async_write_ha_state()
+
+    async def _async_forward_control(
+        self, service: str, required: MediaPlayerEntityFeature, **data: Any
+    ) -> None:
+        """Resolve once at invocation; never retarget a command after an await."""
+        target = self._require_control_target(required)
         entity_id = target.entity_id
         path = _CONTROL_PATH.set((*_CONTROL_PATH.get(), self.entity_id))
         try:
@@ -369,16 +419,74 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
         except ServiceValidationError:
             raise
         except (HomeAssistantError, ConnectionError, OSError) as err:
-            if self._controls_active:
-                self._control_failures[entity_id] = dt_util.utcnow()
-                self._refresh_bound_media()
-                self.async_write_ha_state()
+            self._record_control_failure(entity_id)
             raise HomeAssistantError(
                 "The bound media player could not complete the command; "
                 "playback controls are disabled until its state updates"
             ) from err
         finally:
             _CONTROL_PATH.reset(path)
+
+    @callback
+    def _disable_unimplemented_browse(self, target: MediaPlayerEntity) -> None:
+        if self._controls_active:
+            self._browse_unimplemented[target.entity_id] = target
+            self.async_write_ha_state()
+
+    async def async_browse_media(
+        self, media_content_type: str | None = None, media_content_id: str | None = None
+    ) -> BrowseMedia:
+        """Browse the active provider, retaining its catalog and artwork URLs."""
+        try:
+            target = self._require_control_target(MediaPlayerEntityFeature.BROWSE_MEDIA)
+            media_content_type, media_content_id = unwrap_media_id(
+                target.entity_id, media_content_type, media_content_id
+            )
+        except ServiceValidationError as err:
+            raise BrowseError(str(err)) from err
+        revision = self._browse_revision
+        path = _CONTROL_PATH.set((*_CONTROL_PATH.get(), self.entity_id))
+        try:
+            result = await target.async_browse_media(
+                media_content_type, media_content_id
+            )
+        except BrowseError:
+            raise
+        except ServiceValidationError as err:
+            raise BrowseError(str(err)) from err
+        except NotImplementedError as err:
+            self._disable_unimplemented_browse(target)
+            raise BrowseError(
+                "The selected player advertises browsing but does not implement it"
+            ) from err
+        except (HomeAssistantError, ConnectionError, OSError) as err:
+            self._record_control_failure(target.entity_id)
+            raise BrowseError(
+                "The selected player could not browse media; wait for it to recover and try again"
+            ) from err
+        finally:
+            _CONTROL_PATH.reset(path)
+        if (
+            revision != self._browse_revision
+            or self._control_target() is not target
+            or not target.supported_features & MediaPlayerEntityFeature.BROWSE_MEDIA
+        ):
+            raise BrowseError(
+                "The selected source changed or became unavailable; reopen the media browser"
+            )
+        try:
+            return scope_browse_media(
+                result,
+                target.entity_id,
+                can_play=bool(
+                    target.supported_features & MediaPlayerEntityFeature.PLAY_MEDIA
+                ),
+            )
+        except (ValueError, KeyError, TypeError) as err:
+            self._disable_unimplemented_browse(target)
+            raise BrowseError(
+                "The selected player returned an invalid media catalog"
+            ) from err
 
     async def async_media_play(self) -> None:
         await self._async_forward_control("media_play", MediaPlayerEntityFeature.PLAY)
@@ -433,6 +541,8 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             required |= MediaPlayerEntityFeature.MEDIA_ENQUEUE
         if kwargs.get("announce"):
             required |= MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+        target = self._require_control_target(required)
+        media_type, media_id = unwrap_media_id(target.entity_id, media_type, media_id)
         await self._async_forward_control(
             "play_media",
             required,
@@ -451,6 +561,7 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
     ) -> None:
         """Hide metadata before yielding to any outbound command or late update."""
         if self._source_bindings:
+            self._browse_revision += 1
             self._pending_power = power
             self._pending_source = source
             self._refresh_bound_media()

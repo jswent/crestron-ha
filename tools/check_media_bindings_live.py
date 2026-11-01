@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = "http://127.0.0.1:8124"
 ZONE = "media_player.demo_audio"
 SONOS = "media_player.sonos_1"
+OTHER = "media_player.sonos_2"
 PLAYBACK = (
     Feature.PLAY
     | Feature.PAUSE
@@ -97,6 +98,17 @@ async def main():
             )
             assert result["success"] is False, result
             assert result["error"]["code"] == "service_validation_error", result
+            assert (
+                not (await state())["attributes"]["supported_features"]
+                & Feature.BROWSE_MEDIA
+            )
+            browse_result = await ws_request(
+                {"type": "media_player/browse_media", "entity_id": ZONE}
+            )
+            assert (
+                not browse_result["success"]
+                and browse_result["error"]["code"] == "not_supported"
+            ), browse_result
             after = await state(SONOS)
             assert (after["state"], after["last_updated"]) == (
                 before["state"],
@@ -152,6 +164,51 @@ async def main():
                 response.raise_for_status()
                 assert "svg" in response.headers["Content-Type"]
             passed("Bound playback, metadata, reachable artwork and Crestron volume")
+
+            assert current["attributes"]["supported_features"] & Feature.BROWSE_MEDIA
+            root = await ws_request(
+                {"type": "media_player/browse_media", "entity_id": ZONE}
+            )
+            assert root["success"], root
+            album = root["result"]["children"][0]
+            assert album["can_expand"] and album["can_play"]
+            assert album["thumbnail"].startswith(
+                f"/api/media_player_proxy/{SONOS}/browse_media/"
+            )
+            async with session.get(BASE + album["thumbnail"]) as response:
+                response.raise_for_status()
+                assert b"<svg" in await response.read()
+            album_result = await ws_request(
+                {
+                    "type": "media_player/browse_media",
+                    "entity_id": ZONE,
+                    "media_content_type": album["media_content_type"],
+                    "media_content_id": album["media_content_id"],
+                }
+            )
+            assert album_result["success"], album_result
+            track = album_result["result"]["children"][1]
+            await action(
+                ZONE,
+                "play_media",
+                media_content_type=track["media_content_type"],
+                media_content_id=track["media_content_id"],
+            )
+            await expect("playing", title=track["title"])
+            assert (await state(SONOS))["attributes"][
+                "media_content_id"
+            ] == "demo:track-2"
+            await action(
+                ZONE,
+                "play_media",
+                media_content_type=album["media_content_type"],
+                media_content_id=album["media_content_id"],
+            )
+            first_title = (await state(SONOS))["attributes"]["media_title"]
+            await expect("playing", title=first_title)
+            passed(
+                "Browse root and album, fetch provider artwork, and play selected track/album through the zone"
+            )
 
             simulator.echo = False
             await action(ZONE, "select_source", source="Sonos 1")
@@ -276,7 +333,7 @@ async def main():
             )
             mapping = {key: value for key, value in demo.items() if key != "platform"}
             original_writer = simulator.writer
-            for bindings in ({}, {"1": SONOS}):
+            for bindings in ({}, demo["source_bindings"]):
                 flow = await request(
                     "POST",
                     "/api/config/config_entries/subentries/flow",
@@ -303,6 +360,65 @@ async def main():
                 assert simulator.writer is original_writer
             passed(
                 "Live binding removal/restoration preserves entity ID and processor connection"
+            )
+
+            before_first = await state(SONOS)
+            await action(ZONE, "select_source", source="Sonos 2")
+            await expect(
+                "playing",
+                title=(await state(OTHER))["attributes"]["media_title"],
+                source="Sonos 2",
+            )
+            stale = await ws_request(
+                {
+                    "type": "call_service",
+                    "domain": "media_player",
+                    "service": "play_media",
+                    "target": {"entity_id": ZONE},
+                    "service_data": {
+                        "media_content_type": album["media_content_type"],
+                        "media_content_id": album["media_content_id"],
+                    },
+                }
+            )
+            assert (
+                not stale["success"]
+                and stale["error"]["code"] == "service_validation_error"
+            ), stale
+            assert "different source" in stale["error"]["message"]
+            other_root = await ws_request(
+                {"type": "media_player/browse_media", "entity_id": ZONE}
+            )
+            assert (
+                other_root["success"]
+                and other_root["result"]["title"] == "Sonos 2 media"
+            ), other_root
+            other_album = other_root["result"]["children"][0]
+            other_result = await ws_request(
+                {
+                    "type": "media_player/browse_media",
+                    "entity_id": ZONE,
+                    "media_content_type": other_album["media_content_type"],
+                    "media_content_id": other_album["media_content_id"],
+                }
+            )
+            assert other_result["success"], other_result
+            other_track = other_result["result"]["children"][1]
+            await action(
+                ZONE,
+                "play_media",
+                media_content_type=other_track["media_content_type"],
+                media_content_id=other_track["media_content_id"],
+            )
+            await expect("playing", title=other_track["title"])
+            assert (await state(OTHER))["attributes"][
+                "media_content_id"
+            ] == "demo:track-2"
+            assert (await state(SONOS))["last_updated"] == before_first["last_updated"]
+            await action(ZONE, "select_source", source="Sonos 1")
+            await expect("playing", title=current_title, source="Sonos 1")
+            passed(
+                "Old browser selections cannot cross sources; a new selection controls only the newly selected provider"
             )
 
             simulator.writer.close()
