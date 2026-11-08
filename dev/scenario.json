@@ -1,5 +1,9 @@
 {
   "digital": {"1": true, "2": false, "3": false, "10": true, "11": false, "12": false, "13": false, "14": false, "15": true, "16": false, "20": false, "21": true, "22": false, "23": false, "30": false, "31": false, "32": false},
   "analog": {"1": 32768, "2": 725, "3": 65535, "10": 680, "11": 740, "12": 715, "20": 16384, "21": 1},
-  "serial": {"1": "Dummy Crestron processor"}
+  "serial": {"1": "Dummy Crestron processor"},
+  "pulse_feedback": [
+    {"join": 21, "feedback_join": 21, "value": true},
+    {"join": 22, "feedback_join": 21, "value": false}
+  ]
 }

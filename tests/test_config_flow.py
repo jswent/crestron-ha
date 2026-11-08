@@ -146,6 +146,36 @@ def test_forms_serialize_for_frontend():
         json.dumps(to_field_list(form, custom_serializer=cv.custom_serializer))
 
 
+async def test_media_source_binding_form_validation_and_removal(hass, entry):
+    from tests.test_schema import media_mapping
+
+    flow = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "entity"),
+        context={"source": SOURCE_USER},
+        data={"platform": "media_player"},
+    )
+    assert "source_bindings" in [str(key) for key in flow["data_schema"].schema]
+    bad = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"],
+        media_mapping(source_bindings={3: "media_player.sonos_1"}),
+    )
+    assert bad["errors"] == {"base": "invalid_mapping"}
+    result = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"],
+        media_mapping(source_bindings={1: "media_player.sonos_1"}),
+    )
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    mapping = next(iter(entry.subentries.values()))
+    assert mapping.data["source_bindings"] == {"1": "media_player.sonos_1"}
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "entity"),
+        context={"source": SOURCE_RECONFIGURE, "subentry_id": mapping.subentry_id},
+        data=media_mapping(),
+    )
+    assert result["type"] == FlowResultType.ABORT
+    assert "source_bindings" not in entry.subentries[mapping.subentry_id].data
+
+
 async def test_reconfigure_can_change_source_method(hass, entry):
     """Optional fields can be removed; old analog maps must not reappear as defaults."""
     initial = {

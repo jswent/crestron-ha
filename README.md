@@ -12,6 +12,7 @@ Everything is configured in the Home Assistant UI. There is no YAML to maintain 
 ## Features
 
 - **Seven entity types:** light, cover, climate, media player, switch, sensor, and binary sensor.
+- **Source media bindings:** show the selected source player's media information and use its supported playback controls and media browser.
 - **Multiple bridges:** connect several processors or program slots, each with its own port and its own join numbering.
 - **Physical devices:** group related entities, such as a thermostat and its extra sensors, under one Home Assistant device.
 - **Two-way sync with touchpanels and keypads:** send any Home Assistant state or template to a join, and run Home Assistant actions when a join changes.
@@ -236,11 +237,107 @@ An audio zone with power, volume, mute, and source selection.
 | `sources` | | See below | Source numbers and names, such as `{"1": "Music", "2": "TV"}`. |
 | `source_digital_joins` | | See below | Digital joins and source names, such as `{"51": "Music", "52": "TV"}`. |
 | `default_source` | | No | The source number or join to select when the zone turns on. |
+| `source_bindings` | | No | Source numbers or digital source joins mapped to another `media_player` entity. Supplies media details and supported playback controls for the selected, available source. |
 
 Choose one way to select sources:
 
 - **By number:** set `source_number_join` and `sources`. Home Assistant writes the source number to the analog join.
 - **By digital join:** set `source_digital_joins`. Home Assistant pulses the join for the chosen source, and the join that reads high is the current source.
+
+#### Show media from a source player
+
+Optionally enter **Source media player bindings** when adding or reconfiguring an
+audio zone. Use the same numbers as your source map, with one entity ID per
+bound source. For example, with sources `1: Sonos 1` and `2: TV`:
+
+```yaml
+source_bindings:
+  "1": media_player.sonos_1
+```
+
+In the standalone form, enter just the map (`1: media_player.sonos_1`) in the
+bindings field. In physical-device features or bulk configuration, include the
+`source_bindings` key as shown above. For digital sources use the digital join
+number, for example `51: media_player.sonos_1`. Omit TV if it has no binding.
+Several zones can observe the same source player. Renaming a source preserves
+its binding because the number is the key. Clear the field or use an empty map
+to remove bindings during reconfiguration.
+
+When the powered-on zone selects Sonos 1, it follows that player's playing,
+paused, buffering, or idle status. Playing, paused, and buffering players supply
+their current title, artist, album, artwork, duration, position, and other media
+details. Updates arrive automatically; editing bindings takes effect immediately.
+Crestron still controls power, source, volume, and mute.
+
+Starting with `0.2.0`, the selected binding also enables the source player's
+supported playback controls: play/pause, stop, previous/next track, seek,
+shuffle, repeat, clear playlist, and play-media. Play-media forwards enqueue and
+announcement options only when the source supports them. Grouping, sound modes,
+and provider-specific search remain on the source entity. Several zones selecting
+the same player control that shared player's playback.
+
+Playback controls require a connected, powered-on Crestron zone with confirmed,
+unambiguous source feedback and a loaded, available source entity with a known
+state. They disappear immediately during source/power changes and when the
+source is missing, unknown, unavailable, or unbound. An idle or off source may
+still expose Play if its integration reports it available and supports Play.
+The source integration manages and reports its physical connection; Crestron
+does not open a second connection to the device or assume a retained HA state
+means it is reachable.
+
+Each command rechecks the active binding and capabilities before forwarding
+through Home Assistant. Commands are never queued for a later selection, and
+state still follows source feedback. A failed operation hides playback controls
+until a fresh source state change or report allows recovery. Invalid arguments
+are reported without treating them as a connection failure. A command already
+dispatched belongs to its original source even if selection changes afterward.
+
+Media details disappear immediately when a source or power command starts and
+stay hidden until the processor confirms it. Power-on with a default source
+requires both power and source feedback, in either order. A command without
+feedback leaves the details hidden; pending source/power-on commands request a
+processor refresh so an unchanged selection can still be confirmed. Late updates
+from the old player cannot bring them back. External source/power changes and
+reconnects use current processor feedback and a fresh snapshot of the selected player. Source conflicts,
+an unbound/unknown source, a missing/off/unavailable player, and a disconnected
+or powered-off zone clear media details. An idle player supplies idle status
+without retaining its previous track. Missing fields in a new track replace the
+previous values with empty fields.
+
+Bindings to this or another Crestron media player are ignored to prevent direct
+feedback loops. Use the original source player, such as the Sonos integration's
+entity. A bound player's failure does not disable the zone's Crestron controls.
+
+#### Browse and select media
+
+Starting with `0.2.0`, a selected binding that supports **Browse Media** also
+makes the Crestron zone available in Home Assistant's media browser. Turn the
+zone on, select its bound source, open **Media**, and choose the Crestron zone
+in the player selector. Browse the source's folders, albums, or favorites and
+select an item to play it through that source. Existing bindings need no edits.
+
+The catalog, content types, and artwork come from the source player. Browsing
+is enabled only while that player is loaded, available, and advertises browse
+support; a player supporting playback alone does not enable it. Sources that
+browse but lack Play Media can be viewed without playable items. Changing source,
+power, or availability while a browse request is in progress discards its result.
+
+Provider-specific selections carry a stable reference to their source. An item
+browsed from Sonos 1 cannot accidentally be sent to Sonos 2: select Sonos 1 again
+or reopen the browser for the new source. These IDs can be saved by the media
+picker in scripts and remain valid across restarts as long as the provider's
+entity ID is unchanged. Another zone selecting that same provider can use them.
+Direct `play_media` calls with the provider's original IDs still work.
+
+Native `media-source://` IDs retain Home Assistant's behavior, including local
+media, TTS forms, and supported media-source searches. These global IDs route
+to the currently selected eligible player, whose integration resolves them.
+Provider-specific search is not forwarded; unsupported search buttons are hidden.
+Artwork retains the source player's original proxy URL and authentication token.
+
+If a source advertises browsing but does not implement it, browsing is hidden
+after the error until that source integration reloads. Other playback controls
+remain available. See the [changelog](CHANGELOG.md) for release and upgrade details.
 
 ## Bulk configuration
 

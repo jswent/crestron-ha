@@ -2,21 +2,94 @@
 
 import asyncio
 import logging
+from contextvars import ContextVar
+from datetime import datetime
+from typing import Any
 
 from homeassistant.components.media_player import (
+    DATA_COMPONENT,
+    BrowseMedia,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
+    RepeatMode,
 )
+from homeassistant.components.media_player.errors import BrowseError
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    EventStateReportedData,
+    HomeAssistant,
+    State,
+    callback,
+)
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_state_report_event,
+)
+from homeassistant.util import dt as dt_util
 
 from .entity import CrestronEntity, EntityConfig, async_setup_entities
+from .media_browse import scope_browse_media, unwrap_media_id
 
 _LOGGER = logging.getLogger(__name__)
+_CONTROL_PATH: ContextVar[tuple[str, ...]] = ContextVar(
+    "crestron_media_control_path", default=()
+)
+_ZONE_FEATURES = (
+    MediaPlayerEntityFeature.SELECT_SOURCE
+    | MediaPlayerEntityFeature.VOLUME_MUTE
+    | MediaPlayerEntityFeature.VOLUME_SET
+    | MediaPlayerEntityFeature.TURN_OFF
+    | MediaPlayerEntityFeature.TURN_ON
+)
+_FORWARDED_FEATURES = (
+    MediaPlayerEntityFeature.PLAY
+    | MediaPlayerEntityFeature.PAUSE
+    | MediaPlayerEntityFeature.STOP
+    | MediaPlayerEntityFeature.NEXT_TRACK
+    | MediaPlayerEntityFeature.PREVIOUS_TRACK
+    | MediaPlayerEntityFeature.SEEK
+    | MediaPlayerEntityFeature.PLAY_MEDIA
+    | MediaPlayerEntityFeature.MEDIA_ENQUEUE
+    | MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+    | MediaPlayerEntityFeature.CLEAR_PLAYLIST
+    | MediaPlayerEntityFeature.SHUFFLE_SET
+    | MediaPlayerEntityFeature.REPEAT_SET
+    | MediaPlayerEntityFeature.BROWSE_MEDIA
+)
+
+# Deliberately exclude target power, source, volume, and unrelated attributes.
+_MEDIA_ATTRIBUTES = (
+    "media_content_id",
+    "media_content_type",
+    "media_duration",
+    "media_position",
+    "media_position_updated_at",
+    "media_title",
+    "media_artist",
+    "media_album_name",
+    "media_album_artist",
+    "media_track",
+    "media_series_title",
+    "media_season",
+    "media_episode",
+    "media_channel",
+    "media_playlist",
+    "app_id",
+    "app_name",
+)
+_MEDIA_STATES = (
+    MediaPlayerState.PLAYING,
+    MediaPlayerState.PAUSED,
+    MediaPlayerState.BUFFERING,
+)
 
 
 async def async_setup_entry(
@@ -32,13 +105,6 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
     """An audio zone with 16-bit volume and momentary power controls."""
 
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.VOLUME_MUTE
-        | MediaPlayerEntityFeature.VOLUME_SET
-        | MediaPlayerEntityFeature.TURN_OFF
-        | MediaPlayerEntityFeature.TURN_ON
-    )
 
     def __init__(self, entry: ConfigEntry, subentry: EntityConfig) -> None:
         super().__init__(entry, subentry)
@@ -65,19 +131,441 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
             int(default_source) if default_source is not None else None
         )
         self._active_source_conflict: tuple[int, ...] | None = None
+        self._source_bindings = {
+            int(key): entity_id
+            for key, entity_id in self._config.get("source_bindings", {}).items()
+        }
+        self._bound_state: MediaPlayerState | None = None
+        self._control_failures: dict[str, datetime] = {}
+        self._controls_active = False
+        self._browse_revision = 0
+        self._browse_unimplemented: dict[str, MediaPlayerEntity] = {}
+        self._pending_power: bool | None = None
+        self._pending_source: int | None = None
+        self._source_power_lock = asyncio.Lock()
         self._attr_source_list = list(self._sources.values())
         self._watch("analog", self._volume_join, self._source_number_join)
         self._watch(
             "digital", self._power_on_join, self._mute_join, *self._source_digital_joins
         )
+        self._browse_feedback_context = self._selection_context()
 
     @property
     def state(self) -> MediaPlayerState | None:
-        """Return on/off only when power feedback has been received."""
+        """Keep power authoritative, enriching an on zone with bound playback."""
         value = self._bridge.get_digital(self._power_on_join)
         if value is None:
             return None
-        return MediaPlayerState.ON if value else MediaPlayerState.OFF
+        if not value:
+            return MediaPlayerState.OFF
+        return self._bound_state or MediaPlayerState.ON
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._controls_active = True
+        if self._source_bindings:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass,
+                    set(self._source_bindings.values()) - {self.entity_id},
+                    self._handle_bound_state,
+                )
+            )
+            self.async_on_remove(
+                async_track_state_report_event(
+                    self.hass,
+                    set(self._source_bindings.values()) - {self.entity_id},
+                    self._handle_bound_report,
+                )
+            )
+            self._refresh_bound_media()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Stop a late command result from writing after removal or live edits."""
+        self._controls_active = False
+        self._browse_revision += 1
+        await super().async_will_remove_from_hass()
+
+    def _source_selector(self) -> int | None:
+        """Return only an unambiguous, feedback-confirmed source selector."""
+        if self._source_number_join is not None:
+            selector = self._bridge.get_analog(self._source_number_join)
+        else:
+            active = [
+                join
+                for join in self._source_digital_joins
+                if self._bridge.get_digital(join)
+            ]
+            selector = active[0] if len(active) == 1 else None
+        return selector
+
+    def _binding_entity_id(self) -> str | None:
+        return self._source_bindings.get(self._source_selector())
+
+    def _selection_context(self) -> tuple[bool, bool | None, int | None]:
+        return (
+            self.available,
+            self._bridge.get_digital(self._power_on_join),
+            self._source_selector(),
+        )
+
+    @callback
+    def _handle_bound_state(self, event: Event[EventStateChangedData]) -> None:
+        entity_id = event.data["entity_id"]
+        if (
+            entity_id in self._control_failures
+            and event.time_fired > self._control_failures[entity_id]
+        ):
+            # Ignore state events queued before a failed operation. A new report
+            # can restore controls only if the provider is also available again.
+            self._control_failures.pop(entity_id)
+        if entity_id == self._binding_entity_id():
+            before, after = (
+                state is not None
+                and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+                and not state.attributes.get("restored")
+                for state in (event.data["old_state"], event.data["new_state"])
+            )
+            if before != after:
+                self._browse_revision += 1
+            self._refresh_bound_media()
+            self.async_write_ha_state()
+
+    @callback
+    def _handle_bound_report(self, event: Event[EventStateReportedData]) -> None:
+        """An unchanged but fresh provider report can also restore connectivity."""
+        entity_id = event.data["entity_id"]
+        if (
+            entity_id in self._control_failures
+            and event.time_fired > self._control_failures[entity_id]
+        ):
+            self._control_failures.pop(entity_id)
+            if entity_id == self._binding_entity_id():
+                self._refresh_bound_media()
+                self.async_write_ha_state()
+
+    @callback
+    def _handle_feedback(self, kind: str, join: int | None, value: Any) -> None:
+        if kind not in ("available", "refreshed") and (kind, join) not in self._watched:
+            return
+        if (selection := self._selection_context()) != self._browse_feedback_context:
+            self._browse_feedback_context = selection
+            self._browse_revision += 1
+        if kind == "available":
+            # A new connection establishes a new feedback baseline.
+            self._pending_power = self._pending_source = None
+        elif kind == "digital" and join == self._power_on_join:
+            if value == self._pending_power:
+                self._pending_power = None
+        if self._pending_source is not None:
+            if self._source_number_join is not None:
+                confirmed = (
+                    kind == "analog"
+                    and join == self._source_number_join
+                    and value == self._pending_source
+                )
+            else:
+                confirmed = (
+                    kind == "digital"
+                    and join in self._source_digital_joins
+                    and [
+                        source
+                        for source in self._source_digital_joins
+                        if self._bridge.get_digital(source)
+                    ]
+                    == [self._pending_source]
+                )
+            if confirmed:
+                self._pending_source = None
+        if self._source_bindings:
+            self._refresh_bound_media()
+        self.async_write_ha_state()
+
+    def _bound_target_state(self) -> State | None:
+        """Resolve a usable source only from current, confirmed zone feedback."""
+        if (
+            not self._source_bindings
+            or not getattr(self, "hass", None)
+            or not self.available
+            or self._bridge.get_digital(self._power_on_join) is not True
+            or self._pending_power is not None
+            or self._pending_source is not None
+            or not (entity_id := self._binding_entity_id())
+            or entity_id == self.entity_id
+        ):
+            return None
+        registered = er.async_get(self.hass).async_get(entity_id)
+        if registered is not None and registered.platform == "crestron":
+            return None
+        return self.hass.states.get(entity_id)
+
+    def _control_target(self) -> MediaPlayerEntity | None:
+        """A retained state alone cannot establish a usable control connection."""
+        state = self._bound_target_state()
+        if (
+            not self._controls_active
+            or state is None
+            or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+            or state.attributes.get("restored")
+            or state.entity_id in self._control_failures
+            or (component := self.hass.data.get(DATA_COMPONENT)) is None
+            or (target := component.get_entity(state.entity_id)) is None
+            or isinstance(target, CrestronMediaPlayer)
+            or not target.available
+        ):
+            return None
+        return target
+
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        """Expose only controls usable on the currently selected bound player."""
+        target = self._control_target()
+        features = (
+            target.supported_features & _FORWARDED_FEATURES
+            if target
+            else MediaPlayerEntityFeature(0)
+        )
+        if not features & MediaPlayerEntityFeature.PLAY_MEDIA:
+            features &= ~(
+                MediaPlayerEntityFeature.MEDIA_ENQUEUE
+                | MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+            )
+        if target and self._browse_unimplemented.get(target.entity_id) is target:
+            features &= ~MediaPlayerEntityFeature.BROWSE_MEDIA
+        return _ZONE_FEATURES | features
+
+    @callback
+    def _refresh_bound_media(self) -> None:
+        """Replace the entire projection; absent fields never survive an update."""
+        self._bound_state = None
+        self._attr_media_image_url = None
+        self._attr_shuffle = self._attr_repeat = None
+        for attribute in _MEDIA_ATTRIBUTES:
+            setattr(self, f"_attr_{attribute}", None)
+        target = self._bound_target_state()
+        if target is None:
+            return
+        if self.supported_features & MediaPlayerEntityFeature.SHUFFLE_SET:
+            self._attr_shuffle = target.attributes.get("shuffle")
+        if self.supported_features & MediaPlayerEntityFeature.REPEAT_SET:
+            self._attr_repeat = target.attributes.get("repeat")
+        if target.state == MediaPlayerState.IDLE:
+            self._bound_state = MediaPlayerState.IDLE
+        if target.state not in _MEDIA_STATES:
+            return
+        self._bound_state = MediaPlayerState(target.state)
+        for attribute in _MEDIA_ATTRIBUTES:
+            value = target.attributes.get(attribute)
+            if attribute == "media_position_updated_at":
+                if isinstance(value, str):
+                    try:
+                        value = dt_util.parse_datetime(value)
+                    except ValueError:
+                        value = None
+                elif not isinstance(value, datetime):
+                    value = None
+            setattr(self, f"_attr_{attribute}", value)
+        self._attr_media_image_url = target.attributes.get("entity_picture")
+
+    @property
+    def entity_picture(self) -> str | None:
+        """Reuse the provider's artwork URL, including HA's authenticated proxy."""
+        return self.media_image_url
+
+    def _require_control_target(
+        self, required: MediaPlayerEntityFeature
+    ) -> MediaPlayerEntity:
+        """Apply the same availability and loop guards to reads and commands."""
+        if self.entity_id in _CONTROL_PATH.get():
+            raise ServiceValidationError("A media source binding forms a control loop")
+        target = self._control_target()
+        if target is None:
+            raise ServiceValidationError(
+                "The selected source has no available bound media player"
+            )
+        if target.supported_features & required != required or (
+            required & MediaPlayerEntityFeature.BROWSE_MEDIA
+            and self._browse_unimplemented.get(target.entity_id) is target
+        ):
+            raise ServiceValidationError(
+                "The selected source does not support this media control"
+            )
+        return target
+
+    @callback
+    def _record_control_failure(self, entity_id: str) -> None:
+        if self._controls_active:
+            self._control_failures[entity_id] = dt_util.utcnow()
+            if entity_id == self._binding_entity_id():
+                self._browse_revision += 1
+            self._refresh_bound_media()
+            self.async_write_ha_state()
+
+    async def _async_forward_control(
+        self, service: str, required: MediaPlayerEntityFeature, **data: Any
+    ) -> None:
+        """Resolve once at invocation; never retarget a command after an await."""
+        target = self._require_control_target(required)
+        entity_id = target.entity_id
+        path = _CONTROL_PATH.set((*_CONTROL_PATH.get(), self.entity_id))
+        try:
+            await self.hass.services.async_call(
+                "media_player",
+                service,
+                {**data, "entity_id": entity_id},
+                blocking=True,
+                context=self._context,
+            )
+        except ServiceValidationError:
+            raise
+        except (HomeAssistantError, ConnectionError, OSError) as err:
+            self._record_control_failure(entity_id)
+            raise HomeAssistantError(
+                "The bound media player could not complete the command; "
+                "playback controls are disabled until its state updates"
+            ) from err
+        finally:
+            _CONTROL_PATH.reset(path)
+
+    @callback
+    def _disable_unimplemented_browse(self, target: MediaPlayerEntity) -> None:
+        if self._controls_active:
+            self._browse_unimplemented[target.entity_id] = target
+            self.async_write_ha_state()
+
+    async def async_browse_media(
+        self, media_content_type: str | None = None, media_content_id: str | None = None
+    ) -> BrowseMedia:
+        """Browse the active provider, retaining its catalog and artwork URLs."""
+        try:
+            target = self._require_control_target(MediaPlayerEntityFeature.BROWSE_MEDIA)
+            media_content_type, media_content_id = unwrap_media_id(
+                target.entity_id, media_content_type, media_content_id
+            )
+        except ServiceValidationError as err:
+            raise BrowseError(str(err)) from err
+        revision = self._browse_revision
+        path = _CONTROL_PATH.set((*_CONTROL_PATH.get(), self.entity_id))
+        try:
+            result = await target.async_browse_media(
+                media_content_type, media_content_id
+            )
+        except BrowseError:
+            raise
+        except ServiceValidationError as err:
+            raise BrowseError(str(err)) from err
+        except NotImplementedError as err:
+            self._disable_unimplemented_browse(target)
+            raise BrowseError(
+                "The selected player advertises browsing but does not implement it"
+            ) from err
+        except (HomeAssistantError, ConnectionError, OSError) as err:
+            self._record_control_failure(target.entity_id)
+            raise BrowseError(
+                "The selected player could not browse media; wait for it to recover and try again"
+            ) from err
+        finally:
+            _CONTROL_PATH.reset(path)
+        if (
+            revision != self._browse_revision
+            or self._control_target() is not target
+            or not target.supported_features & MediaPlayerEntityFeature.BROWSE_MEDIA
+        ):
+            raise BrowseError(
+                "The selected source changed or became unavailable; reopen the media browser"
+            )
+        try:
+            return scope_browse_media(
+                result,
+                target.entity_id,
+                can_play=bool(
+                    target.supported_features & MediaPlayerEntityFeature.PLAY_MEDIA
+                ),
+            )
+        except (ValueError, KeyError, TypeError) as err:
+            self._disable_unimplemented_browse(target)
+            raise BrowseError(
+                "The selected player returned an invalid media catalog"
+            ) from err
+
+    async def async_media_play(self) -> None:
+        await self._async_forward_control("media_play", MediaPlayerEntityFeature.PLAY)
+
+    async def async_media_pause(self) -> None:
+        await self._async_forward_control("media_pause", MediaPlayerEntityFeature.PAUSE)
+
+    async def async_media_play_pause(self) -> None:
+        await self._async_forward_control(
+            "media_play_pause",
+            MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PAUSE,
+        )
+
+    async def async_media_stop(self) -> None:
+        await self._async_forward_control("media_stop", MediaPlayerEntityFeature.STOP)
+
+    async def async_media_next_track(self) -> None:
+        await self._async_forward_control(
+            "media_next_track", MediaPlayerEntityFeature.NEXT_TRACK
+        )
+
+    async def async_media_previous_track(self) -> None:
+        await self._async_forward_control(
+            "media_previous_track", MediaPlayerEntityFeature.PREVIOUS_TRACK
+        )
+
+    async def async_media_seek(self, position: float) -> None:
+        await self._async_forward_control(
+            "media_seek", MediaPlayerEntityFeature.SEEK, seek_position=position
+        )
+
+    async def async_clear_playlist(self) -> None:
+        await self._async_forward_control(
+            "clear_playlist", MediaPlayerEntityFeature.CLEAR_PLAYLIST
+        )
+
+    async def async_set_shuffle(self, shuffle: bool) -> None:
+        await self._async_forward_control(
+            "shuffle_set", MediaPlayerEntityFeature.SHUFFLE_SET, shuffle=shuffle
+        )
+
+    async def async_set_repeat(self, repeat: RepeatMode) -> None:
+        await self._async_forward_control(
+            "repeat_set", MediaPlayerEntityFeature.REPEAT_SET, repeat=repeat
+        )
+
+    async def async_play_media(
+        self, media_type: str, media_id: str, **kwargs: Any
+    ) -> None:
+        required = MediaPlayerEntityFeature.PLAY_MEDIA
+        if kwargs.get("enqueue") is not None:
+            required |= MediaPlayerEntityFeature.MEDIA_ENQUEUE
+        if kwargs.get("announce"):
+            required |= MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+        target = self._require_control_target(required)
+        media_type, media_id = unwrap_media_id(target.entity_id, media_type, media_id)
+        await self._async_forward_control(
+            "play_media",
+            required,
+            media_content_type=media_type,
+            media_content_id=media_id,
+            **{
+                key: value
+                for key, value in kwargs.items()
+                if key in ("enqueue", "announce", "extra")
+            },
+        )
+
+    @callback
+    def _begin_transition(
+        self, *, power: bool | None = None, source: int | None = None
+    ) -> None:
+        """Hide metadata before yielding to any outbound command or late update."""
+        if self._source_bindings:
+            self._browse_revision += 1
+            self._pending_power = power
+            self._pending_source = source
+            self._refresh_bound_media()
+            self.async_write_ha_state()
 
     @property
     def source(self) -> str | None:
@@ -137,6 +625,20 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
         if source not in self._source_by_name:
             raise ServiceValidationError(f"Unknown source: {source}")
         selector = self._source_by_name[source]
+        async with self._source_power_lock:
+            self._begin_transition(source=selector)
+            await self._async_select_source(selector)
+            await self._async_request_bound_feedback()
+
+    async def _async_request_bound_feedback(self) -> None:
+        """XSIG may omit unchanged feedback until explicitly asked to refresh."""
+        if self._source_bindings and (
+            self._pending_power is not None or self._pending_source is not None
+        ):
+            await self._async_command(self._bridge.request_update)
+
+    async def _async_select_source(self, selector: int) -> None:
+        """Send selection within an already established transition."""
         if self._source_number_join is not None:
             await self._async_command(
                 self._bridge.set_analog, self._source_number_join, selector
@@ -146,15 +648,20 @@ class CrestronMediaPlayer(CrestronEntity, MediaPlayerEntity):
 
     async def async_turn_on(self) -> None:
         """Pulse power and optionally select the configured default source."""
-        await self._async_command(self._bridge.pulse_digital, self._power_on_join)
-        if self._default_source is not None:
-            await self.async_select_source(self._sources[self._default_source])
+        async with self._source_power_lock:
+            self._begin_transition(power=True, source=self._default_source)
+            await self._async_command(self._bridge.pulse_digital, self._power_on_join)
+            if self._default_source is not None:
+                await self._async_select_source(self._default_source)
+            await self._async_request_bound_feedback()
 
     async def async_turn_off(self) -> None:
         """Pulse power and clear the legacy analog source selector."""
-        await self._async_command(self._bridge.pulse_digital, self._power_off_join)
-        if self._source_number_join is not None:
-            await asyncio.sleep(0.05)
-            await self._async_command(
-                self._bridge.set_analog, self._source_number_join, 0
-            )
+        async with self._source_power_lock:
+            self._begin_transition(power=False)
+            await self._async_command(self._bridge.pulse_digital, self._power_off_join)
+            if self._source_number_join is not None:
+                await asyncio.sleep(0.05)
+                await self._async_command(
+                    self._bridge.set_analog, self._source_number_join, 0
+                )

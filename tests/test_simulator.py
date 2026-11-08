@@ -67,6 +67,32 @@ async def test_update_request_resends_only_nonzero_signals():
         await asyncio.wait_for(peer, 2)
 
 
+async def test_pulse_feedback_latches_power_and_ignores_button_release():
+    server = XSigServer()
+    simulator = Simulator(
+        {
+            "pulse_feedback": [
+                {"join": 21, "feedback_join": 21, "value": True},
+                {"join": 22, "feedback_join": 21, "value": False},
+            ]
+        }
+    )
+    await server.start("127.0.0.1", 0)
+    peer = asyncio.create_task(simulator.run_session("127.0.0.1", server.bound_port))
+    try:
+        await wait_until(lambda: server.available)
+        await server.pulse_digital(21)
+        await wait_until(lambda: len(simulator.commands) == 2)
+        assert server.get_digital(21) is True
+        await server.pulse_digital(22)
+        await wait_until(lambda: len(simulator.commands) == 4)
+        assert server.get_digital(21) is False
+        assert simulator.values["digital"][21] is False
+    finally:
+        await server.stop()
+        await asyncio.wait_for(peer, 2)
+
+
 async def test_scheduled_feedback_sync_and_reconnect():
     server = XSigServer()
     events = []

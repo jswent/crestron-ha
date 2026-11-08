@@ -16,6 +16,8 @@ feedback mappings, and scheduled events relative to each connection. Example::
     }
 
 Commands are echoed on the same join unless a feedback mapping redirects them.
+Optional pulse_feedback entries (join, feedback_join, value) latch digital
+feedback on a rising command and ignore its release, e.g. power on/off buttons.
 Like the XSIG symbol, the reply to an update request carries non-zero signals only.
 Use --all-joins to seed every legal join with a non-zero value, --no-echo for
 feedback-only testing, and --interactive for commands: digital JOIN 0|1,
@@ -88,6 +90,16 @@ def validate_scenario(raw: Any) -> dict[str, Any]:
         scenario["events"].append(dict(event, after=after))
     scenario["events"].sort(key=lambda event: event["after"])
     scenario["feedback"] = {}
+    scenario["pulse_feedback"] = {}
+    for mapping in raw.get("pulse_feedback", []):
+        xsig.encode_digital(mapping["join"], True)
+        xsig.encode_digital(mapping["feedback_join"], mapping["value"])
+        if mapping["join"] in scenario["pulse_feedback"]:
+            raise ValueError("Duplicate pulse feedback mapping")
+        scenario["pulse_feedback"][mapping["join"]] = (
+            mapping["feedback_join"],
+            bool(mapping["value"]),
+        )
     for mapping in raw.get("feedback", []):
         kind = mapping["kind"]
         if kind not in ENCODERS:
@@ -147,8 +159,16 @@ class Simulator:
                     del self.commands[:-100]
                     print(f"Command: {kind} join {join}", flush=True)
                     if self.echo:
-                        target = self.scenario["feedback"].get((kind, join), join)
-                        await self.send_feedback(kind, target, value)
+                        if (
+                            kind == "digital"
+                            and join in self.scenario["pulse_feedback"]
+                        ):
+                            if value:
+                                target, latched = self.scenario["pulse_feedback"][join]
+                                await self.send_feedback(kind, target, latched)
+                        else:
+                            target = self.scenario["feedback"].get((kind, join), join)
+                            await self.send_feedback(kind, target, value)
         except asyncio.IncompleteReadError:
             print("Disconnected", flush=True)
         finally:
