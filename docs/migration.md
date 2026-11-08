@@ -36,7 +36,14 @@ For hundreds of mappings, convert the inventory into the bridge Configure option
 
 The import adds or updates keyed records after validating the entire batch. Records and device features omitted from a batch remain configured, so a partial import cannot accidentally remove the rest of a large installation. Omitting or emptying an existing device's `entities` list also preserves all of its features; a new device still needs at least one feature. Use the individual mapping's delete control to remove it. To remove only one feature from a device, remove its record in that device's Reconfigure form. Batch conversion is still deliberate: the importer does not directly understand old component YAML, copied integration domains, or legacy rule syntax.
 
-## Upgrading from a pre-release build
+## Upgrading from 0.2.0 prereleases
+
+Update to `v0.2.0` through HACS and restart Home Assistant. Existing bridges,
+bindings, entity IDs, and saved `crestron-source://v1/...` media selections remain
+valid. No remapping or config-entry migration is required. The stable release
+uses the same implementation as `v0.2.0b3`.
+
+## Upgrading from a development build before 0.1.0
 
 This only applies if you ran a development build of this integration before version 0.1.0. Those builds created one device for every entity mapping. On upgrade, the existing entity mappings are marked internally with `legacy_device: true`. Their entity unique IDs and device identifiers do not change, keeping their registry metadata and device references intact. Previously created devices remain visible; newly created standalone mappings do not add devices.
 

@@ -12,6 +12,7 @@ Everything is configured in the Home Assistant UI. There is no YAML to maintain 
 ## Features
 
 - **Seven entity types:** light, cover, climate, media player, switch, sensor, and binary sensor.
+- **Source media bindings:** show the selected source player's media information and use its supported playback controls and media browser.
 - **Multiple bridges:** connect several processors or program slots, each with its own port and its own join numbering.
 - **Physical devices:** group related entities, such as a thermostat and its extra sensors, under one Home Assistant device.
 - **Two-way sync with touchpanels and keypads:** send any Home Assistant state or template to a join, and run Home Assistant actions when a join changes.
@@ -268,7 +269,7 @@ their current title, artist, album, artwork, duration, position, and other media
 details. Updates arrive automatically; editing bindings takes effect immediately.
 Crestron still controls power, source, volume, and mute.
 
-Starting with `0.2.0b2`, the selected binding also enables the source player's
+Starting with `0.2.0`, the selected binding also enables the source player's
 supported playback controls: play/pause, stop, previous/next track, seek,
 shuffle, repeat, clear playlist, and play-media. Play-media forwards enqueue and
 announcement options only when the source supports them. Grouping, sound modes,
@@ -309,7 +310,7 @@ entity. A bound player's failure does not disable the zone's Crestron controls.
 
 #### Browse and select media
 
-Starting with `0.2.0b3`, a selected binding that supports **Browse Media** also
+Starting with `0.2.0`, a selected binding that supports **Browse Media** also
 makes the Crestron zone available in Home Assistant's media browser. Turn the
 zone on, select its bound source, open **Media**, and choose the Crestron zone
 in the player selector. Browse the source's folders, albums, or favorites and
@@ -336,8 +337,7 @@ Artwork retains the source player's original proxy URL and authentication token.
 
 If a source advertises browsing but does not implement it, browsing is hidden
 after the error until that source integration reloads. Other playback controls
-remain available. See the [production browser test](docs/source-media-browse-acceptance.md)
-for validation and rollback.
+remain available. See the [changelog](CHANGELOG.md) for release and upgrade details.
 
 ## Bulk configuration
 
